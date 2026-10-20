@@ -1,4 +1,4 @@
-import type { PostCategory, PostInput, PostStatus } from "@/lib/types";
+import type { GalleryItemInput, GalleryStatus, PostCategory, PostInput, PostStatus } from "@/lib/types";
 
 const categories: PostCategory[] = ["Notícia", "Projeto", "Agenda", "Inclusão"];
 const statuses: PostStatus[] = ["draft", "published"];
@@ -48,4 +48,39 @@ export function isSameOrigin(request: Request) {
   } catch {
     return false;
   }
+}
+
+export function validateGalleryItemInput(value: unknown): { data?: GalleryItemInput; error?: string } {
+  if (!value || typeof value !== "object") return { error: "Dados inválidos." };
+  const body = value as Record<string, unknown>;
+  const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl.trim() : "";
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  const caption = typeof body.caption === "string" ? body.caption.trim() : "";
+  const status = body.status === "hidden" ? "hidden" : "published" as GalleryStatus;
+  const postId = body.postId === null || body.postId === "" || body.postId === undefined
+    ? null
+    : Number(body.postId);
+
+  if (!imageUrl.startsWith("/media/")) return { error: "Imagem inválida." };
+  if (title.length > 180) return { error: "O título deve ter no máximo 180 caracteres." };
+  if (caption.length > 600) return { error: "A legenda deve ter no máximo 600 caracteres." };
+  if (postId !== null && (!Number.isInteger(postId) || postId < 1)) return { error: "Matéria vinculada inválida." };
+
+  return { data: { imageUrl, title, caption, postId, status } };
+}
+
+export function validateGalleryItems(value: unknown): { data?: GalleryItemInput[]; error?: string } {
+  if (!value || typeof value !== "object") return { error: "Dados inválidos." };
+  const items = (value as Record<string, unknown>).items;
+  if (!Array.isArray(items) || items.length < 1 || items.length > 30) {
+    return { error: "Envie entre 1 e 30 imagens por vez." };
+  }
+
+  const parsed: GalleryItemInput[] = [];
+  for (const item of items) {
+    const result = validateGalleryItemInput(item);
+    if (!result.data) return { error: result.error };
+    parsed.push(result.data);
+  }
+  return { data: parsed };
 }

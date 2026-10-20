@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 type GalleryPhoto = {
   src: string;
   alt: string;
-  href: string;
+  href?: string;
   category: string;
 };
 
@@ -141,7 +141,7 @@ export function MandateGallery({ photos }: { photos: GalleryPhoto[] }) {
           <div className="spatial-caption">
             <small>{photos[selected].category}</small>
             <strong>{photos[selected].alt}</strong>
-            <Link href={photos[selected].href}>Ver matéria <ExternalLink size={14} /></Link>
+            {photos[selected].href && <Link href={photos[selected].href}>Ver matéria <ExternalLink size={14} /></Link>}
           </div>
 
           <div className="spatial-map" aria-label="Mapa da galeria">

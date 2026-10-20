@@ -5,7 +5,7 @@ import { MandateGallery } from "@/components/mandate-gallery";
 import { PostCard } from "@/components/post-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { listPublishedPosts, listPublishedPostSummaries } from "@/lib/db";
+import { listPublishedGalleryItems, listPublishedPosts, listPublishedPostSummaries } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -13,16 +13,26 @@ export default function Home() {
   const posts = listPublishedPosts(6);
   const featuredPost = posts[0];
   const remainingPosts = posts.slice(1, 4);
-  const galleryPhotos = listPublishedPostSummaries(60)
+  const managedGalleryPhotos = listPublishedGalleryItems(16).map((item) => ({
+    src: item.imageUrl,
+    alt: item.title || item.caption || item.postTitle || "Registro do mandato",
+    href: item.postSlug ? `/noticias/${item.postSlug}` : "",
+    category: item.postSlug ? "Matéria relacionada" : "Galeria",
+  }));
+  const fallbackGalleryPhotos = listPublishedPostSummaries(60)
     .filter((post): post is typeof post & { coverImage: string } => Boolean(post.coverImage))
     .filter((post, index, items) => items.findIndex((item) => item.coverImage === post.coverImage) === index)
-    .slice(0, 16)
     .map((post) => ({
       src: post.coverImage,
       alt: post.title,
       href: `/noticias/${post.slug}`,
       category: post.category,
     }));
+  const managedSources = new Set(managedGalleryPhotos.map((photo) => photo.src));
+  const galleryPhotos = [
+    ...managedGalleryPhotos,
+    ...fallbackGalleryPhotos.filter((photo) => !managedSources.has(photo.src)),
+  ].slice(0, 16);
 
   return (
     <>
