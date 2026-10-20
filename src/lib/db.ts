@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
-import type { GalleryItem, GalleryItemInput, GalleryStatus, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
+import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeItem, LegislativeItemInput, LegislativeKind, LegislativeStatusGroup, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
 
 type PostRow = {
   id: number;
@@ -31,6 +31,37 @@ type GalleryRow = {
   sort_order: number;
   created_at: string;
   updated_at: string;
+};
+
+type LegislativeRow = {
+  id: number;
+  external_id: string;
+  kind: LegislativeKind;
+  type: string;
+  number: string;
+  year: number;
+  title: string;
+  summary: string;
+  author: string;
+  status: string;
+  status_group: LegislativeStatusGroup;
+  source_url: string;
+  occurred_at: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  updated_at: string;
+};
+
+type SyncRunRow = {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "success" | "error";
+  found: number;
+  inserted: number;
+  updated: number;
+  news_inserted: number;
+  error: string | null;
 };
 
 const globalForDb = globalThis as unknown as { juniorCoringaDb?: Database.Database };
@@ -77,6 +108,47 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_gallery_publication
       ON gallery_items(status, sort_order, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS legislative_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK(kind IN ('project', 'indication')),
+      type TEXT NOT NULL,
+      number TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      author TEXT NOT NULL,
+      status TEXT NOT NULL,
+      status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
+      source_url TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      published INTEGER NOT NULL DEFAULT 1,
+      raw_json TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_legislative_publication
+      ON legislative_items(published, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_legislative_filters
+      ON legislative_items(kind, status_group, year);
+
+    CREATE TABLE IF NOT EXISTS camara_sync_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error')),
+      found INTEGER NOT NULL DEFAULT 0,
+      inserted INTEGER NOT NULL DEFAULT 0,
+      updated INTEGER NOT NULL DEFAULT 0,
+      news_inserted INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
+      ON camara_sync_runs(started_at DESC);
   `);
 
   const columns = database.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>;
@@ -95,6 +167,47 @@ function openDatabase() {
 }
 
 export const db = globalForDb.juniorCoringaDb ?? openDatabase();
+
+// Reaplica migrações aditivas durante Fast Refresh, quando a conexão global já existia.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS legislative_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK(kind IN ('project', 'indication')),
+    type TEXT NOT NULL,
+    number TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    author TEXT NOT NULL,
+    status TEXT NOT NULL,
+    status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
+    source_url TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published INTEGER NOT NULL DEFAULT 1,
+    raw_json TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_legislative_publication
+    ON legislative_items(published, occurred_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_legislative_filters
+    ON legislative_items(kind, status_group, year);
+  CREATE TABLE IF NOT EXISTS camara_sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error')),
+    found INTEGER NOT NULL DEFAULT 0,
+    inserted INTEGER NOT NULL DEFAULT 0,
+    updated INTEGER NOT NULL DEFAULT 0,
+    news_inserted INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
+    ON camara_sync_runs(started_at DESC);
+`);
 
 if (process.env.NODE_ENV !== "production") {
   globalForDb.juniorCoringaDb = db;
@@ -133,6 +246,43 @@ function mapGalleryItem(row: GalleryRow | undefined): GalleryItem | null {
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    externalId: row.external_id,
+    kind: row.kind,
+    type: row.type,
+    number: row.number,
+    year: row.year,
+    title: row.title,
+    summary: row.summary,
+    author: row.author,
+    status: row.status,
+    statusGroup: row.status_group,
+    sourceUrl: row.source_url,
+    occurredAt: row.occurred_at,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapSyncRun(row: SyncRunRow | undefined): CamaraSyncRun | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    status: row.status,
+    found: row.found,
+    inserted: row.inserted,
+    updated: row.updated,
+    newsInserted: row.news_inserted,
+    error: row.error,
   };
 }
 
@@ -377,6 +527,154 @@ export function updateGalleryItem(id: number, input: GalleryItemInput) {
 
 export function deleteGalleryItem(id: number) {
   return db.prepare("DELETE FROM gallery_items WHERE id = ?").run(id).changes > 0;
+}
+
+export function listLegislativeItems(options: {
+  kind?: LegislativeKind;
+  statusGroup?: LegislativeStatusGroup;
+  year?: number;
+  limit?: number;
+} = {}) {
+  const clauses = ["published = 1"];
+  const values: Array<string | number> = [];
+  if (options.kind) {
+    clauses.push("kind = ?");
+    values.push(options.kind);
+  }
+  if (options.statusGroup) {
+    clauses.push("status_group = ?");
+    values.push(options.statusGroup);
+  }
+  if (options.year) {
+    clauses.push("year = ?");
+    values.push(options.year);
+  }
+  values.push(Math.min(Math.max(options.limit ?? 250, 1), 500));
+  const rows = db.prepare(
+    `SELECT * FROM legislative_items
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT ?`,
+  ).all(...values) as LegislativeRow[];
+  return rows.map((row) => mapLegislativeItem(row) as LegislativeItem);
+}
+
+export function getLegislativeItem(id: number) {
+  return mapLegislativeItem(
+    db.prepare("SELECT * FROM legislative_items WHERE id = ? AND published = 1").get(id) as LegislativeRow | undefined,
+  );
+}
+
+export function getLegislativeCounts() {
+  const row = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN kind = 'indication' THEN 1 ELSE 0 END) AS indications,
+      SUM(CASE WHEN kind = 'project' AND status_group = 'processing' THEN 1 ELSE 0 END) AS processing,
+      SUM(CASE WHEN kind = 'project' AND status_group = 'approved' THEN 1 ELSE 0 END) AS approved
+    FROM legislative_items WHERE published = 1
+  `).get() as { total: number; indications: number | null; processing: number | null; approved: number | null };
+  return {
+    total: row.total,
+    indications: row.indications ?? 0,
+    processing: row.processing ?? 0,
+    approved: row.approved ?? 0,
+  };
+}
+
+export function upsertLegislativeItem(input: LegislativeItemInput) {
+  const existing = db.prepare(
+    "SELECT id, type, number, year, title, summary, author, status, status_group, source_url, occurred_at FROM legislative_items WHERE external_id = ?",
+  ).get(input.externalId) as (Pick<LegislativeRow, "id" | "type" | "number" | "year" | "title" | "summary" | "author" | "status" | "status_group" | "source_url" | "occurred_at"> | undefined);
+  const now = new Date().toISOString();
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO legislative_items
+        (external_id, kind, type, number, year, title, summary, author, status, status_group,
+         source_url, occurred_at, first_seen_at, last_seen_at, updated_at, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.externalId, input.kind, input.type, input.number, input.year, input.title, input.summary,
+      input.author, input.status, input.statusGroup, input.sourceUrl, input.occurredAt, now, now, now,
+      input.rawJson ?? null,
+    );
+    return "inserted" as const;
+  }
+
+  const changed = existing.type !== input.type || existing.number !== input.number || existing.year !== input.year ||
+    existing.title !== input.title || existing.summary !== input.summary || existing.author !== input.author ||
+    existing.status !== input.status || existing.status_group !== input.statusGroup ||
+    existing.source_url !== input.sourceUrl || existing.occurred_at !== input.occurredAt;
+  db.prepare(`
+    UPDATE legislative_items SET
+      kind = ?, type = ?, number = ?, year = ?, title = ?, summary = ?, author = ?, status = ?,
+      status_group = ?, source_url = ?, occurred_at = ?, last_seen_at = ?,
+      updated_at = CASE WHEN ? = 1 THEN ? ELSE updated_at END, raw_json = ?
+    WHERE id = ?
+  `).run(
+    input.kind, input.type, input.number, input.year, input.title, input.summary, input.author,
+    input.status, input.statusGroup, input.sourceUrl, input.occurredAt, now, changed ? 1 : 0, now,
+    input.rawJson ?? null, existing.id,
+  );
+  return changed ? "updated" as const : "unchanged" as const;
+}
+
+export function createOfficialNewsPost(input: {
+  sourceId: string;
+  sourceUrl: string;
+  title: string;
+  excerpt: string;
+  publishedAt: string;
+}) {
+  const existing = db.prepare("SELECT id FROM posts WHERE source_id = ?").get(input.sourceId) as { id: number } | undefined;
+  if (existing) return false;
+  const now = new Date().toISOString();
+  const slug = getUniqueSlug(input.title);
+  const content = `${input.excerpt}\n\nEsta publicação foi identificada no portal oficial da Câmara Municipal de Campo Grande.\n\n[Leia a matéria completa na Câmara Municipal](${input.sourceUrl})`;
+  db.prepare(`
+    INSERT INTO posts
+      (title, slug, excerpt, content, category, status, cover_image, featured, published_at,
+       created_at, updated_at, source_id, source_url)
+    VALUES (?, ?, ?, ?, 'Notícia', 'published', NULL, 0, ?, ?, ?, ?, ?)
+  `).run(input.title, slug, input.excerpt, content, input.publishedAt, now, now, input.sourceId, input.sourceUrl);
+  return true;
+}
+
+export function startCamaraSyncRun() {
+  const result = db.prepare(
+    "INSERT INTO camara_sync_runs (started_at, status) VALUES (?, 'running')",
+  ).run(new Date().toISOString());
+  return Number(result.lastInsertRowid);
+}
+
+export function finishCamaraSyncRun(id: number, result: {
+  status: "success" | "error";
+  found?: number;
+  inserted?: number;
+  updated?: number;
+  newsInserted?: number;
+  error?: string | null;
+}) {
+  db.prepare(`
+    UPDATE camara_sync_runs SET finished_at = ?, status = ?, found = ?, inserted = ?, updated = ?,
+      news_inserted = ?, error = ? WHERE id = ?
+  `).run(
+    new Date().toISOString(), result.status, result.found ?? 0, result.inserted ?? 0,
+    result.updated ?? 0, result.newsInserted ?? 0, result.error ?? null, id,
+  );
+}
+
+export function getLatestCamaraSyncRun() {
+  return mapSyncRun(
+    db.prepare("SELECT * FROM camara_sync_runs ORDER BY id DESC LIMIT 1").get() as SyncRunRow | undefined,
+  );
+}
+
+export function isCamaraSyncRunning() {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  return Boolean(db.prepare(
+    "SELECT 1 FROM camara_sync_runs WHERE status = 'running' AND started_at >= ? LIMIT 1",
+  ).get(cutoff));
 }
 
 export function reorderGalleryItems(ids: number[]) {

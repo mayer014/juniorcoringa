@@ -29,6 +29,9 @@ export function SiteFooter() {
           <Link href="/noticias" className="footer-link">
             Notícias e projetos <ArrowUpRight size={17} />
           </Link>
+          <Link href="/atuacao-legislativa" className="footer-link">
+            Atuação legislativa <ArrowUpRight size={17} />
+          </Link>
           <Link href="/admin/login" className="footer-admin">
             Área administrativa
           </Link>

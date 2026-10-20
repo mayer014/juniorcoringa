@@ -2,17 +2,21 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowDown, ArrowRight, Check, HeartHandshake, MessagesSquare, Newspaper, Sparkles } from "lucide-react";
 import { MandateGallery } from "@/components/mandate-gallery";
+import { LegislativeCard } from "@/components/legislative-card";
 import { PostCard } from "@/components/post-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { listPublishedGalleryItems, listPublishedPosts, listPublishedPostSummaries } from "@/lib/db";
+import { scheduleCamaraSyncIfStale } from "@/lib/camara-sync";
+import { listLegislativeItems, listPublishedGalleryItems, listPublishedPosts, listPublishedPostSummaries } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export default function Home() {
+  scheduleCamaraSyncIfStale();
   const posts = listPublishedPosts(6);
   const featuredPost = posts[0];
   const remainingPosts = posts.slice(1, 4);
+  const legislativeItems = listLegislativeItems({ limit: 3 });
   const managedGalleryPhotos = listPublishedGalleryItems(16).map((item) => ({
     src: item.imageUrl,
     alt: item.title || item.caption || item.postTitle || "Registro do mandato",
@@ -182,6 +186,28 @@ export default function Home() {
                   <p>A área administrativa já está pronta para receber matérias, projetos e agendas.</p>
                 </div>
               </div>
+            )}
+          </div>
+        </section>
+
+        <section className="section chamber-now" id="atuacao-legislativa">
+          <div className="shell">
+            <div className="section-heading section-heading--split">
+              <div>
+                <div className="eyebrow"><span /> Dados oficiais</div>
+                <h2>Agora na <em>Câmara</em></h2>
+                <p>Indicações, projetos em tramitação e resultados do mandato, direto do portal legislativo.</p>
+              </div>
+              <Link href="/atuacao-legislativa" className="button button--outline button--light-outline">
+                Ver atuação completa <ArrowRight size={18} />
+              </Link>
+            </div>
+            {legislativeItems.length ? (
+              <div className="legislative-grid legislative-grid--home">
+                {legislativeItems.map((item) => <LegislativeCard key={item.id} item={item} />)}
+              </div>
+            ) : (
+              <div className="chamber-now__empty">Os primeiros dados oficiais aparecerão aqui após a sincronização com a Câmara.</div>
             )}
           </div>
         </section>

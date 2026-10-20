@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ExternalLink, FilePlus2, Images, LayoutDashboard, LogOut, Menu, X } from "lucide-react";
+import { ExternalLink, FilePlus2, Images, Landmark, LayoutDashboard, LogOut, Menu, X } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -21,6 +21,7 @@ export function AdminShell({ children, email }: { children: React.ReactNode; ema
     { href: "/admin", label: "Publicações", icon: LayoutDashboard, exact: true },
     { href: "/admin/nova", label: "Nova matéria", icon: FilePlus2 },
     { href: "/admin/galeria", label: "Galeria", icon: Images },
+    { href: "/admin/integracao", label: "Integração Câmara", icon: Landmark },
   ];
 
   return (

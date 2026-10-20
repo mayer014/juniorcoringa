@@ -12,6 +12,7 @@ const links = [
   { href: "/#bandeiras", label: "Bandeiras" },
   { href: "/#galeria", label: "Galeria" },
   { href: "/noticias", label: "Notícias e projetos" },
+  { href: "/atuacao-legislativa", label: "Atuação legislativa" },
 ];
 
 export function SiteHeader() {
@@ -43,7 +44,8 @@ export function SiteHeader() {
 
         <nav className={`main-nav${open ? " is-open" : ""}`} aria-label="Navegação principal">
           {links.map((link) => {
-            const isActive = link.href === "/noticias" && pathname.startsWith("/noticias");
+            const isActive = (link.href === "/noticias" && pathname.startsWith("/noticias")) ||
+              (link.href === "/atuacao-legislativa" && pathname.startsWith("/atuacao-legislativa"));
             return (
               <Link
                 key={link.href}

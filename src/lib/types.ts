@@ -58,3 +58,41 @@ export type PostOption = {
   title: string;
   slug: string;
 };
+
+export type LegislativeKind = "project" | "indication";
+export type LegislativeStatusGroup = "processing" | "approved" | "archived" | "protocolled";
+
+export type LegislativeItem = {
+  id: number;
+  externalId: string;
+  kind: LegislativeKind;
+  type: string;
+  number: string;
+  year: number;
+  title: string;
+  summary: string;
+  author: string;
+  status: string;
+  statusGroup: LegislativeStatusGroup;
+  sourceUrl: string;
+  occurredAt: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  updatedAt: string;
+};
+
+export type LegislativeItemInput = Omit<LegislativeItem, "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt"> & {
+  rawJson?: string;
+};
+
+export type CamaraSyncRun = {
+  id: number;
+  startedAt: string;
+  finishedAt: string | null;
+  status: "running" | "success" | "error";
+  found: number;
+  inserted: number;
+  updated: number;
+  newsInserted: number;
+  error: string | null;
+};

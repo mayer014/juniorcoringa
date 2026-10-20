@@ -8,6 +8,10 @@ services:
       ADMIN_EMAIL: admin@juniorcoringa.com.br
       ADMIN_PASSWORD: troque-esta-senha
       SESSION_SECRET: troque-por-uma-chave-aleatoria-longa
+      CAMARA_API_URL: https://www.camara.ms.gov.br/jsonweb/web-aplicativo.php
+      CAMARA_API_TOKEN: configure-o-token
+      CAMARA_VEREADOR_NOME: Junior Coringa
+      CAMARA_SYNC_SECRET: troque-por-outro-segredo-aleatorio
       DATA_DIR: /app/data
     volumes:
       - junior_coringa_data:/app/data
