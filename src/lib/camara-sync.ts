@@ -2,7 +2,6 @@ import "server-only";
 
 import { XMLParser } from "fast-xml-parser";
 import * as he from "he";
-import { PDFParse } from "pdf-parse";
 import {
   createOfficialNewsPost,
   finishCamaraSyncRun,
@@ -268,6 +267,9 @@ async function fetchPdfText(sourceUrl: string) {
   }, `PDF ${sourceUrl}`);
   if (!response.ok) throw new Error(`PDF respondeu HTTP ${response.status}.`);
   if (!response.headers.get("content-type")?.toLowerCase().includes("application/pdf")) throw new Error("Documento oficial não retornou um PDF.");
+  // Carregamento tardio: uma incompatibilidade opcional do leitor de PDF nunca pode
+  // impedir a importação da listagem oficial e deixar toda a página vazia.
+  const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: new Uint8Array(await response.arrayBuffer()) });
   try {
     const result = await parser.getText();
