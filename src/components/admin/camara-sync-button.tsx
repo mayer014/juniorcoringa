@@ -1,16 +1,16 @@
 "use client";
 
-import { History, RefreshCw } from "lucide-react";
+import { ArchiveRestore, History, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export function CamaraSyncButton() {
   const router = useRouter();
-  const [loading, setLoading] = useState<"daily" | "history" | null>(null);
+  const [loading, setLoading] = useState<"daily" | "history" | "indications" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
 
-  async function synchronize(mode: "daily" | "history") {
+  async function synchronize(mode: "daily" | "history" | "indications") {
     setLoading(mode);
     setMessage("");
     setError(false);
@@ -27,7 +27,9 @@ export function CamaraSyncButton() {
       if (!response.ok || !payload.result) throw new Error(payload.error || "Não foi possível sincronizar.");
       setMessage(mode === "history"
         ? `${payload.result.inserted} leis históricas novas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
-        : `${payload.result.inserted} novos registros, ${payload.result.updated} atualizados, ${payload.result.retitled} títulos simplificados e ${payload.result.newsInserted} novas matérias.`);
+        : mode === "indications"
+          ? `${payload.result.inserted} indicações históricas recuperadas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
+          : `${payload.result.inserted} novos registros, ${payload.result.updated} atualizados, ${payload.result.retitled} títulos simplificados e ${payload.result.newsInserted} novas matérias.`);
       router.refresh();
     } catch (caught) {
       setError(true);
@@ -47,6 +49,10 @@ export function CamaraSyncButton() {
         <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("history")} disabled={Boolean(loading)}>
           <History size={18} className={loading === "history" ? "spin" : undefined} />
           {loading === "history" ? "Importando histórico..." : "Importar histórico de leis"}
+        </button>
+        <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("indications")} disabled={Boolean(loading)}>
+          <ArchiveRestore size={18} className={loading === "indications" ? "spin" : undefined} />
+          {loading === "indications" ? "Recuperando indicações..." : "Restaurar histórico de indicações"}
         </button>
       </div>
       {message && <p className={error ? "camara-sync-message is-error" : "camara-sync-message"}>{message}</p>}

@@ -49,7 +49,7 @@ export type CamaraSyncResult = {
   retitled: number;
 };
 
-export type CamaraSyncMode = "daily" | "history";
+export type CamaraSyncMode = "daily" | "history" | "indications";
 
 function normalizeText(value: unknown) {
   return he.decode(String(value ?? ""))
@@ -462,11 +462,13 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily"): Promise<Ca
     const currentYear = new Date().getFullYear();
     const [projectRows, indicationRows, news] = mode === "history"
       ? [await fetchLegislativeRows("Ato", "projeto"), [], []]
-      : await Promise.all([
-          fetchLegislativeRows("Ato", "projeto", currentYear),
-          fetchLegislativeRows("Documento", "documento", currentYear),
-          fetchOfficialNews(),
-        ]);
+      : mode === "indications"
+        ? [[], await fetchLegislativeRows("Documento", "documento"), []]
+        : await Promise.all([
+            fetchLegislativeRows("Ato", "projeto", currentYear),
+            fetchLegislativeRows("Documento", "documento", currentYear),
+            fetchOfficialNews(),
+          ]);
     const projects = projectRows
       .map(projectFromRow)
       .filter((item): item is LegislativeItemInput => Boolean(item))

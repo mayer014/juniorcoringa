@@ -18,6 +18,8 @@ Crie um volume e monte-o exatamente em:
 
 Sem esse volume, matérias e imagens seriam perdidas ao recriar o contêiner.
 
+No EasyPanel, confirme que o armazenamento aparece vinculado ao aplicativo `junior-coringa` e que o **Mount Path** é exatamente `/app/data`. Não use `/data`, `/app` nem um caminho temporário. O painel administrativo exibe um alerta quando o processo não detecta esse volume separado.
+
 Na primeira inicialização de um volume vazio, o contêiner instala automaticamente o acervo importado do WordPress. Nas inicializações seguintes, o banco e as novas publicações do painel são preservados sem sobrescrita.
 
 ## 4. Defina as variáveis
@@ -68,6 +70,10 @@ Substitua `SEU_CAMARA_SYNC_SECRET` pelo mesmo valor configurado no aplicativo. O
 Após a implantação, use **Sincronizar agora** no painel para buscar somente os registros do ano corrente. Essa rotina é incremental, não revisita anos anteriores e só abre o PDF de uma indicação quando ela ainda não existe no banco.
 
 Use **Importar histórico de leis** uma vez para carregar todos os projetos antigos que possuam vínculo oficial com lei aprovada. Essa importação não busca indicações antigas. As duas rotinas são idempotentes: podem ser executadas novamente sem duplicar registros.
+
+Se o banco precisar ser reconstruído, use **Restaurar histórico de indicações** uma única vez. Essa operação consulta todas as indicações disponíveis no portal e pode demorar alguns minutos. Só a execute depois de confirmar o volume persistente em `/app/data`; as sincronizações diárias posteriores continuam consultando somente o ano atual.
+
+Na mesma página administrativa, a lista **Registros da Câmara** permite buscar, filtrar, ocultar, voltar a exibir ou excluir um registro. Itens ocultos e excluídos não são reativados pelas sincronizações seguintes.
 
 ## 6. Faça o deploy
 

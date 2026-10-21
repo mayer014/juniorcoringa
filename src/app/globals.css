@@ -2768,6 +2768,19 @@ img {
 .camara-sync-message { max-width: 410px; margin: 0; color: #087d30; font-size: 9px; text-align: right; }
 .camara-sync-message.is-error { color: #a72d39; }
 .admin-stats--four { grid-template-columns: repeat(4, 1fr); }
+.legislative-admin-manager { overflow: hidden; }
+.legislative-admin-filters { padding: 16px 20px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid rgba(18,55,93,.08); background: #f9fbfd; }
+.legislative-admin-filters select,
+.legislative-admin-search { height: 40px; border: 1px solid #dbe4eb; border-radius: 10px; color: var(--blue-dark); background: white; }
+.legislative-admin-filters select { padding: 0 34px 0 11px; font: 650 11px var(--font-body); }
+.legislative-admin-search { min-width: 260px; padding: 0 11px; display: flex; align-items: center; gap: 7px; flex: 1; color: var(--muted); }
+.legislative-admin-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--blue-dark); background: transparent; font: 650 11px var(--font-body); }
+.legislative-admin-clear { color: var(--muted); font-size: 10px; font-weight: 800; }
+.legislative-admin-table tr.is-hidden { opacity: .63; background: #fafbfc; }
+.legislative-admin-table .icon-action:disabled { opacity: .45; cursor: wait; }
+.legislative-admin-pagination { margin: 16px 20px 20px; }
+.persistence-alert { align-items: flex-start; flex-wrap: wrap; }
+.persistence-alert code { padding: 2px 6px; border-radius: 5px; color: #8b2430; background: rgba(178,56,67,.09); font-weight: 850; }
 .camara-status-card { padding-bottom: 4px; }
 .camara-status-grid { padding: 22px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .camara-status-grid > div { padding: 15px; display: grid; gap: 5px; border-radius: 12px; background: #f5f8fa; }
@@ -2987,6 +3000,11 @@ img {
   .camara-sync-action { width: 100%; align-items: stretch; }
   .camara-sync-buttons { align-items: stretch; flex-direction: column; }
   .camara-sync-message { text-align: left; }
+  .legislative-admin-filters { align-items: stretch; flex-direction: column; }
+  .legislative-admin-search,
+  .legislative-admin-filters select,
+  .legislative-admin-filters .admin-button { width: 100%; }
+  .legislative-admin-search { min-width: 0; }
   .camara-status-grid { grid-template-columns: 1fr; }
 }
 

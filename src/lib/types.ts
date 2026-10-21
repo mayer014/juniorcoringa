@@ -87,9 +87,10 @@ export type LegislativeItem = {
   firstSeenAt: string;
   lastSeenAt: string;
   updatedAt: string;
+  published: boolean;
 };
 
-export type LegislativeItemInput = Omit<LegislativeItem, "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt"> & {
+export type LegislativeItemInput = Omit<LegislativeItem, "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt" | "published"> & {
   rawJson?: string;
 };
 

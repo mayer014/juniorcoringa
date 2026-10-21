@@ -58,6 +58,8 @@ type LegislativeRow = {
   first_seen_at: string;
   last_seen_at: string;
   updated_at: string;
+  published: number;
+  deleted: number;
 };
 
 type SyncRunRow = {
@@ -73,11 +75,11 @@ type SyncRunRow = {
 };
 
 const globalForDb = globalThis as unknown as { juniorCoringaDb?: Database.Database };
+const dataDir = path.resolve(
+  /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
+);
 
 function openDatabase() {
-  const dataDir = path.resolve(
-    /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
-  );
   fs.mkdirSync(dataDir, { recursive: true });
 
   const database = new Database(path.join(dataDir, "junior-coringa.sqlite"));
@@ -143,6 +145,7 @@ function openDatabase() {
       last_seen_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       published INTEGER NOT NULL DEFAULT 1,
+      deleted INTEGER NOT NULL DEFAULT 0,
       raw_json TEXT
     );
 
@@ -184,6 +187,18 @@ function openDatabase() {
 
 export const db = globalForDb.juniorCoringaDb ?? openDatabase();
 
+export function getDatabaseStorageStatus() {
+  if (process.platform === "win32") return { dataDir, persistentMountDetected: true };
+  try {
+    return {
+      dataDir,
+      persistentMountDetected: fs.statSync(dataDir).dev !== fs.statSync(process.cwd()).dev,
+    };
+  } catch {
+    return { dataDir, persistentMountDetected: false };
+  }
+}
+
 // Reaplica migrações aditivas durante Fast Refresh, quando a conexão global já existia.
 db.exec(`
   CREATE TABLE IF NOT EXISTS legislative_items (
@@ -212,6 +227,7 @@ db.exec(`
     last_seen_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     published INTEGER NOT NULL DEFAULT 1,
+    deleted INTEGER NOT NULL DEFAULT 0,
     raw_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_legislative_publication
@@ -243,6 +259,8 @@ const legislativeMigrations = [
   ["law_date", "TEXT"],
   ["law_url", "TEXT"],
   ["author_role", "TEXT"],
+  ["published", "INTEGER NOT NULL DEFAULT 1"],
+  ["deleted", "INTEGER NOT NULL DEFAULT 0"],
 ] as const;
 for (const [name, type] of legislativeMigrations) {
   if (!legislativeColumns.some((column) => column.name === name)) {
@@ -317,6 +335,7 @@ function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | 
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     updatedAt: row.updated_at,
+    published: Boolean(row.published),
   };
 }
 
@@ -586,7 +605,7 @@ export function listLegislativeItems(options: {
   offset?: number;
   query?: string;
 } = {}) {
-  const clauses = ["published = 1"];
+  const clauses = ["published = 1", "deleted = 0"];
   const values: Array<string | number> = [];
   if (options.kind) {
     clauses.push("kind = ?");
@@ -622,7 +641,7 @@ export function countLegislativeItems(options: {
   year?: number;
   query?: string;
 } = {}) {
-  const clauses = ["published = 1"];
+  const clauses = ["published = 1", "deleted = 0"];
   const values: Array<string | number> = [];
   if (options.kind) { clauses.push("kind = ?"); values.push(options.kind); }
   if (options.statusGroup) { clauses.push("status_group = ?"); values.push(options.statusGroup); }
@@ -637,7 +656,7 @@ export function countLegislativeItems(options: {
 }
 
 export function listLegislativeYears() {
-  return (db.prepare("SELECT DISTINCT year FROM legislative_items WHERE published = 1 ORDER BY year DESC").all() as Array<{ year: number }>).map((row) => row.year);
+  return (db.prepare("SELECT DISTINCT year FROM legislative_items WHERE published = 1 AND deleted = 0 ORDER BY year DESC").all() as Array<{ year: number }>).map((row) => row.year);
 }
 
 export function getLegislativeItemByExternalId(externalId: string) {
@@ -648,7 +667,7 @@ export function getLegislativeItemByExternalId(externalId: string) {
 
 export function getLegislativeItem(id: number) {
   return mapLegislativeItem(
-    db.prepare("SELECT * FROM legislative_items WHERE id = ? AND published = 1").get(id) as LegislativeRow | undefined,
+    db.prepare("SELECT * FROM legislative_items WHERE id = ? AND published = 1 AND deleted = 0").get(id) as LegislativeRow | undefined,
   );
 }
 
@@ -659,7 +678,7 @@ export function getLegislativeCounts() {
       SUM(CASE WHEN kind = 'indication' THEN 1 ELSE 0 END) AS indications,
       SUM(CASE WHEN kind = 'project' AND status_group = 'processing' THEN 1 ELSE 0 END) AS processing,
       SUM(CASE WHEN kind = 'project' AND status_group = 'approved' THEN 1 ELSE 0 END) AS approved
-    FROM legislative_items WHERE published = 1
+    FROM legislative_items WHERE published = 1 AND deleted = 0
   `).get() as { total: number; indications: number | null; processing: number | null; approved: number | null };
   return {
     total: row.total,
@@ -676,6 +695,83 @@ export function updateLegislativeItemTitle(id: number, title: string) {
     SET title = ?, updated_at = ?
     WHERE id = ? AND title <> ?
   `).run(title, now, id, title).changes > 0;
+}
+
+export function listAdminLegislativeItems(options: {
+  kind?: LegislativeKind;
+  visibility?: "published" | "hidden";
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}) {
+  const clauses = ["deleted = 0"];
+  const values: Array<string | number> = [];
+  if (options.kind) {
+    clauses.push("kind = ?");
+    values.push(options.kind);
+  }
+  if (options.visibility) {
+    clauses.push("published = ?");
+    values.push(options.visibility === "published" ? 1 : 0);
+  }
+  if (options.query?.trim()) {
+    const query = `%${options.query.trim()}%`;
+    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR number LIKE ? OR law_number LIKE ?)");
+    values.push(query, query, query, query, query, query);
+  }
+  values.push(Math.min(Math.max(options.limit ?? 50, 1), 100));
+  values.push(Math.max(options.offset ?? 0, 0));
+  const rows = db.prepare(`
+    SELECT * FROM legislative_items
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `).all(...values) as LegislativeRow[];
+  return rows.map((row) => mapLegislativeItem(row) as LegislativeItem);
+}
+
+export function countAdminLegislativeItems(options: {
+  kind?: LegislativeKind;
+  visibility?: "published" | "hidden";
+  query?: string;
+} = {}) {
+  const clauses = ["deleted = 0"];
+  const values: Array<string | number> = [];
+  if (options.kind) {
+    clauses.push("kind = ?");
+    values.push(options.kind);
+  }
+  if (options.visibility) {
+    clauses.push("published = ?");
+    values.push(options.visibility === "published" ? 1 : 0);
+  }
+  if (options.query?.trim()) {
+    const query = `%${options.query.trim()}%`;
+    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR number LIKE ? OR law_number LIKE ?)");
+    values.push(query, query, query, query, query, query);
+  }
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM legislative_items WHERE ${clauses.join(" AND ")}`).get(...values) as { total: number };
+  return row.total;
+}
+
+export function updateLegislativeVisibility(id: number, published: boolean) {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE legislative_items
+    SET published = ?, updated_at = ?
+    WHERE id = ? AND deleted = 0
+  `).run(published ? 1 : 0, now, id);
+  if (!result.changes) return null;
+  return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
+}
+
+export function deleteLegislativeItem(id: number) {
+  const now = new Date().toISOString();
+  return db.prepare(`
+    UPDATE legislative_items
+    SET deleted = 1, published = 0, updated_at = ?
+    WHERE id = ? AND deleted = 0
+  `).run(now, id).changes > 0;
 }
 
 export function upsertLegislativeItem(input: LegislativeItemInput) {

@@ -12,7 +12,9 @@ export async function POST(request: Request) {
   if (!(await getSession())) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   try {
     const body = await request.json().catch(() => null) as { mode?: unknown } | null;
-    const mode: CamaraSyncMode = body?.mode === "history" ? "history" : "daily";
+    const mode: CamaraSyncMode = body?.mode === "history"
+      ? "history"
+      : body?.mode === "indications" ? "indications" : "daily";
     const result = await syncCamaraData(mode);
     revalidatePath("/");
     revalidatePath("/noticias");
