@@ -44,6 +44,9 @@ Essa senha de desenvolvimento não funciona em produção.
 | `ADMIN_PASSWORD_HASH` | alternativa opcional a `ADMIN_PASSWORD`, usando hash bcrypt |
 | `SESSION_SECRET` | chave aleatória longa usada para assinar a sessão |
 | `DATA_DIR` | diretório persistente do banco e dos uploads |
+| `CAMARA_SYNC_SECRET` | segredo do endpoint interno de sincronização |
+| `CAMARA_PDF_DETAILS_LIMIT` | quantidade máxima de PDFs novos detalhados por execução |
+| `TZ` | fuso da aplicação; use `America/Cuiaba` |
 
 Quando `ADMIN_PASSWORD_HASH` estiver definido, ele tem prioridade sobre `ADMIN_PASSWORD`.
 

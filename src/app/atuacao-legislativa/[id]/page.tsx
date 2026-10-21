@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ArrowLeft, ArrowUpRight, CalendarDays, Landmark, UserRound } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, CalendarDays, CheckCircle2, Landmark, MapPin, UserRound, Wrench } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SiteFooter } from "@/components/site-footer";
@@ -29,15 +29,36 @@ export default async function LegislativeDetailPage({ params }: PageProps) {
           <span className={`legislative-status legislative-status--${item.statusGroup}`}>{item.status}</span>
           <span className="legislative-detail__type">{item.type}</span>
           <h1>{item.title}</h1>
+          {item.neighborhood && <span className="legislative-detail__neighborhood"><MapPin size={17} /> {item.neighborhood}</span>}
           <p className="legislative-detail__summary">{item.summary}</p>
           <div className="legislative-detail__meta">
             <span><CalendarDays /> <small>Protocolado em</small><strong>{formatDate(item.occurredAt)}</strong></span>
-            <span><UserRound /> <small>Autoria</small><strong>{item.author}</strong></span>
+            <span><UserRound /> <small>{item.authorRole ?? "Autoria"}</small><strong>{item.author}</strong></span>
             <span><Landmark /> <small>Situação atual</small><strong>{item.status}</strong></span>
           </div>
+          {(item.service || item.location) && (
+            <section className="legislative-detail__request" aria-label="Detalhes da solicitação">
+              {item.service && <div><Wrench /><span><small>O que foi solicitado</small><strong>{item.service}</strong></span></div>}
+              {item.location && <div><MapPin /><span><small>Onde</small><strong>{item.location}</strong></span></div>}
+            </section>
+          )}
+          {item.lawNumber && (
+            <section className="legislative-law-result">
+              <CheckCircle2 />
+              <div><small>Resultado oficial</small><h2>{item.lawNumber}</h2>{item.lawDate && <p>Publicada em {item.lawDate}</p>}</div>
+              {item.lawUrl && <a href={item.lawUrl} target="_blank" rel="noopener noreferrer">Ler a lei consolidada <ArrowUpRight size={17} /></a>}
+            </section>
+          )}
+          {item.fullText && (
+            <section className="legislative-official-text">
+              <span>Documento oficial</span>
+              <h2>Texto completo da indicação</h2>
+              <div>{item.fullText}</div>
+            </section>
+          )}
           <div className="legislative-source-note">
-            <div><strong>Fonte oficial</strong><p>Este registro foi importado do portal legislativo da Câmara Municipal de Campo Grande/MS.</p></div>
-            <a className="button" href={item.sourceUrl} target="_blank" rel="noopener noreferrer">Consultar na Câmara <ArrowUpRight size={18} /></a>
+            <div><strong>Fonte oficial</strong><p>Registro importado do portal legislativo da Câmara Municipal de Campo Grande/MS. Número {item.number}/{item.year}.</p></div>
+            <a className="button" href={item.sourceUrl} target="_blank" rel="noopener noreferrer">Consultar documento oficial <ArrowUpRight size={18} /></a>
           </div>
         </div>
       </main>

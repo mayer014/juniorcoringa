@@ -18,9 +18,10 @@ const links = [
 export function SiteHeader() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+  const solid = /^\/atuacao-legislativa\/.+/.test(pathname);
 
   return (
-    <header className="site-header">
+    <header className={`site-header${solid ? " site-header--solid" : ""}`}>
       <div className="shell site-header__inner">
         <Link href="/" className="brand" aria-label="Junior Coringa — página inicial">
           <Image

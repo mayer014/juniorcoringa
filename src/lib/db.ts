@@ -46,6 +46,14 @@ type LegislativeRow = {
   status: string;
   status_group: LegislativeStatusGroup;
   source_url: string;
+  location: string | null;
+  neighborhood: string | null;
+  service: string | null;
+  full_text: string | null;
+  law_number: string | null;
+  law_date: string | null;
+  law_url: string | null;
+  author_role: string | null;
   occurred_at: string;
   first_seen_at: string;
   last_seen_at: string;
@@ -122,6 +130,14 @@ function openDatabase() {
       status TEXT NOT NULL,
       status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
       source_url TEXT NOT NULL,
+      location TEXT,
+      neighborhood TEXT,
+      service TEXT,
+      full_text TEXT,
+      law_number TEXT,
+      law_date TEXT,
+      law_url TEXT,
+      author_role TEXT,
       occurred_at TEXT NOT NULL,
       first_seen_at TEXT NOT NULL,
       last_seen_at TEXT NOT NULL,
@@ -183,6 +199,14 @@ db.exec(`
     status TEXT NOT NULL,
     status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
     source_url TEXT NOT NULL,
+    location TEXT,
+    neighborhood TEXT,
+    service TEXT,
+    full_text TEXT,
+    law_number TEXT,
+    law_date TEXT,
+    law_url TEXT,
+    author_role TEXT,
     occurred_at TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
@@ -208,6 +232,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
     ON camara_sync_runs(started_at DESC);
 `);
+
+const legislativeColumns = db.prepare("PRAGMA table_info(legislative_items)").all() as Array<{ name: string }>;
+const legislativeMigrations = [
+  ["location", "TEXT"],
+  ["neighborhood", "TEXT"],
+  ["service", "TEXT"],
+  ["full_text", "TEXT"],
+  ["law_number", "TEXT"],
+  ["law_date", "TEXT"],
+  ["law_url", "TEXT"],
+  ["author_role", "TEXT"],
+] as const;
+for (const [name, type] of legislativeMigrations) {
+  if (!legislativeColumns.some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE legislative_items ADD COLUMN ${name} ${type}`);
+  }
+}
 
 if (process.env.NODE_ENV !== "production") {
   globalForDb.juniorCoringaDb = db;
@@ -264,6 +305,14 @@ function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | 
     status: row.status,
     statusGroup: row.status_group,
     sourceUrl: row.source_url,
+    location: row.location,
+    neighborhood: row.neighborhood,
+    service: row.service,
+    fullText: row.full_text,
+    lawNumber: row.law_number,
+    lawDate: row.law_date,
+    lawUrl: row.law_url,
+    authorRole: row.author_role,
     occurredAt: row.occurred_at,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
@@ -534,6 +583,8 @@ export function listLegislativeItems(options: {
   statusGroup?: LegislativeStatusGroup;
   year?: number;
   limit?: number;
+  offset?: number;
+  query?: string;
 } = {}) {
   const clauses = ["published = 1"];
   const values: Array<string | number> = [];
@@ -549,14 +600,50 @@ export function listLegislativeItems(options: {
     clauses.push("year = ?");
     values.push(options.year);
   }
+  if (options.query?.trim()) {
+    const query = `%${options.query.trim()}%`;
+    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR service LIKE ? OR number LIKE ?)");
+    values.push(query, query, query, query, query, query);
+  }
   values.push(Math.min(Math.max(options.limit ?? 250, 1), 500));
+  values.push(Math.max(options.offset ?? 0, 0));
   const rows = db.prepare(
     `SELECT * FROM legislative_items
      WHERE ${clauses.join(" AND ")}
      ORDER BY occurred_at DESC, id DESC
-     LIMIT ?`,
+     LIMIT ? OFFSET ?`,
   ).all(...values) as LegislativeRow[];
   return rows.map((row) => mapLegislativeItem(row) as LegislativeItem);
+}
+
+export function countLegislativeItems(options: {
+  kind?: LegislativeKind;
+  statusGroup?: LegislativeStatusGroup;
+  year?: number;
+  query?: string;
+} = {}) {
+  const clauses = ["published = 1"];
+  const values: Array<string | number> = [];
+  if (options.kind) { clauses.push("kind = ?"); values.push(options.kind); }
+  if (options.statusGroup) { clauses.push("status_group = ?"); values.push(options.statusGroup); }
+  if (options.year) { clauses.push("year = ?"); values.push(options.year); }
+  if (options.query?.trim()) {
+    const query = `%${options.query.trim()}%`;
+    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR service LIKE ? OR number LIKE ?)");
+    values.push(query, query, query, query, query, query);
+  }
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM legislative_items WHERE ${clauses.join(" AND ")}`).get(...values) as { total: number };
+  return row.total;
+}
+
+export function listLegislativeYears() {
+  return (db.prepare("SELECT DISTINCT year FROM legislative_items WHERE published = 1 ORDER BY year DESC").all() as Array<{ year: number }>).map((row) => row.year);
+}
+
+export function getLegislativeItemByExternalId(externalId: string) {
+  return mapLegislativeItem(
+    db.prepare("SELECT * FROM legislative_items WHERE external_id = ?").get(externalId) as LegislativeRow | undefined,
+  );
 }
 
 export function getLegislativeItem(id: number) {
@@ -584,18 +671,21 @@ export function getLegislativeCounts() {
 
 export function upsertLegislativeItem(input: LegislativeItemInput) {
   const existing = db.prepare(
-    "SELECT id, type, number, year, title, summary, author, status, status_group, source_url, occurred_at FROM legislative_items WHERE external_id = ?",
-  ).get(input.externalId) as (Pick<LegislativeRow, "id" | "type" | "number" | "year" | "title" | "summary" | "author" | "status" | "status_group" | "source_url" | "occurred_at"> | undefined);
+    "SELECT * FROM legislative_items WHERE external_id = ?",
+  ).get(input.externalId) as LegislativeRow | undefined;
   const now = new Date().toISOString();
   if (!existing) {
     db.prepare(`
       INSERT INTO legislative_items
         (external_id, kind, type, number, year, title, summary, author, status, status_group,
-         source_url, occurred_at, first_seen_at, last_seen_at, updated_at, raw_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         source_url, location, neighborhood, service, full_text, law_number, law_date, law_url,
+         author_role, occurred_at, first_seen_at, last_seen_at, updated_at, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.externalId, input.kind, input.type, input.number, input.year, input.title, input.summary,
-      input.author, input.status, input.statusGroup, input.sourceUrl, input.occurredAt, now, now, now,
+      input.author, input.status, input.statusGroup, input.sourceUrl, input.location, input.neighborhood,
+      input.service, input.fullText, input.lawNumber, input.lawDate, input.lawUrl, input.authorRole,
+      input.occurredAt, now, now, now,
       input.rawJson ?? null,
     );
     return "inserted" as const;
@@ -604,16 +694,23 @@ export function upsertLegislativeItem(input: LegislativeItemInput) {
   const changed = existing.type !== input.type || existing.number !== input.number || existing.year !== input.year ||
     existing.title !== input.title || existing.summary !== input.summary || existing.author !== input.author ||
     existing.status !== input.status || existing.status_group !== input.statusGroup ||
-    existing.source_url !== input.sourceUrl || existing.occurred_at !== input.occurredAt;
+    existing.source_url !== input.sourceUrl || existing.location !== input.location ||
+    existing.neighborhood !== input.neighborhood || existing.service !== input.service ||
+    existing.full_text !== input.fullText || existing.law_number !== input.lawNumber ||
+    existing.law_date !== input.lawDate || existing.law_url !== input.lawUrl ||
+    existing.author_role !== input.authorRole || existing.occurred_at !== input.occurredAt;
   db.prepare(`
     UPDATE legislative_items SET
       kind = ?, type = ?, number = ?, year = ?, title = ?, summary = ?, author = ?, status = ?,
-      status_group = ?, source_url = ?, occurred_at = ?, last_seen_at = ?,
+      status_group = ?, source_url = ?, location = ?, neighborhood = ?, service = ?, full_text = ?,
+      law_number = ?, law_date = ?, law_url = ?, author_role = ?, occurred_at = ?, last_seen_at = ?,
       updated_at = CASE WHEN ? = 1 THEN ? ELSE updated_at END, raw_json = ?
     WHERE id = ?
   `).run(
     input.kind, input.type, input.number, input.year, input.title, input.summary, input.author,
-    input.status, input.statusGroup, input.sourceUrl, input.occurredAt, now, changed ? 1 : 0, now,
+    input.status, input.statusGroup, input.sourceUrl, input.location, input.neighborhood, input.service,
+    input.fullText, input.lawNumber, input.lawDate, input.lawUrl, input.authorRole, input.occurredAt,
+    now, changed ? 1 : 0, now,
     input.rawJson ?? null, existing.id,
   );
   return changed ? "updated" as const : "unchanged" as const;

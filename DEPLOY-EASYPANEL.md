@@ -33,6 +33,8 @@ CAMARA_API_URL=https://www.camara.ms.gov.br/jsonweb/web-aplicativo.php
 CAMARA_API_TOKEN=seu-token-de-dados-abertos
 CAMARA_VEREADOR_NOME=Junior Coringa
 CAMARA_SYNC_SECRET=outro-segredo-aleatorio-com-pelo-menos-48-caracteres
+CAMARA_PDF_DETAILS_LIMIT=50
+TZ=America/Cuiaba
 DATA_DIR=/app/data
 ```
 
@@ -44,24 +46,26 @@ openssl rand -base64 48
 
 Não reutilize a senha do GitHub, Hostinger ou EasyPanel.
 
-## 5. Agende a integração da Câmara a cada 6 horas
+## 5. Agende a integração da Câmara diariamente às 06:00
 
 O site possui a rota protegida `POST /api/internal/camara/sync`. Configure no agendador da VPS ou do EasyPanel:
 
 ```cron
-0 */6 * * *
+0 6 * * *
 ```
 
 Requisição executada pelo agendamento:
 
 ```bash
-curl --fail --silent --show-error --max-time 120 \
+curl --fail --silent --show-error --max-time 900 \
   --request POST \
   --header "Authorization: Bearer SEU_CAMARA_SYNC_SECRET" \
   https://juniorcoringa.com.br/api/internal/camara/sync
 ```
 
-Substitua `SEU_CAMARA_SYNC_SECRET` pelo mesmo valor configurado no aplicativo. Como proteção adicional, a página inicial também dispara uma sincronização em segundo plano quando os dados estão há mais de 6 horas sem atualização. A rota impede execuções simultâneas.
+Substitua `SEU_CAMARA_SYNC_SECRET` pelo mesmo valor configurado no aplicativo. O agendador deve usar `America/Cuiaba`. Se ele operar exclusivamente em UTC, use `0 10 * * *`, equivalente às 06:00 de Campo Grande. A rota impede execuções simultâneas e a navegação de visitantes não dispara sincronizações.
+
+Após a primeira implantação desta integração, execute a rota manualmente uma vez para carregar o histórico desde 2024. A sincronização importa todos os registros imediatamente e detalha até `CAMARA_PDF_DETAILS_LIMIT` PDFs ainda não processados por execução, começando pelos mais recentes.
 
 ## 6. Faça o deploy
 

@@ -15,7 +15,7 @@ export default function IntegrationPage() {
         <div>
           <span>Dados oficiais</span>
           <h1>Integração com a Câmara</h1>
-          <p>Notícias, indicações e projetos do vereador atualizados automaticamente a cada 6 horas.</p>
+          <p>Notícias, indicações e projetos do vereador atualizados diariamente às 06:00, no horário de Campo Grande.</p>
         </div>
         <CamaraSyncButton />
       </div>

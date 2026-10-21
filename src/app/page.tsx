@@ -6,13 +6,11 @@ import { LegislativeCard } from "@/components/legislative-card";
 import { PostCard } from "@/components/post-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { scheduleCamaraSyncIfStale } from "@/lib/camara-sync";
 import { listLegislativeItems, listPublishedGalleryItems, listPublishedPosts, listPublishedPostSummaries } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export default function Home() {
-  scheduleCamaraSyncIfStale();
   const posts = listPublishedPosts(6);
   const featuredPost = posts[0];
   const remainingPosts = posts.slice(1, 4);

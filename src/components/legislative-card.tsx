@@ -19,8 +19,10 @@ export function LegislativeCard({ item }: { item: LegislativeItem }) {
         <span className={`legislative-status legislative-status--${item.statusGroup}`}>{statusLabels[item.statusGroup]}</span>
       </div>
       <span className="legislative-card__type">{item.type} · {formatDate(item.occurredAt, "short")}</span>
+      {item.neighborhood && <span className="legislative-card__place">{item.neighborhood}</span>}
       <h3><Link href={`/atuacao-legislativa/${item.id}`}>{item.title}</Link></h3>
       <p>{item.summary}</p>
+      {item.lawNumber && <span className="legislative-card__law"><CheckCircle2 size={15} /> {item.lawNumber}</span>}
       <Link className="text-link" href={`/atuacao-legislativa/${item.id}`}>Ver detalhes <ArrowUpRight size={17} /></Link>
     </article>
   );

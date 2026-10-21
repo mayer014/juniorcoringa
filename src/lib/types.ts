@@ -75,6 +75,14 @@ export type LegislativeItem = {
   status: string;
   statusGroup: LegislativeStatusGroup;
   sourceUrl: string;
+  location: string | null;
+  neighborhood: string | null;
+  service: string | null;
+  fullText: string | null;
+  lawNumber: string | null;
+  lawDate: string | null;
+  lawUrl: string | null;
+  authorRole: string | null;
   occurredAt: string;
   firstSeenAt: string;
   lastSeenAt: string;
