@@ -2764,6 +2764,7 @@ img {
 .legislative-source-note p { margin: 5px 0 0; color: rgba(255,255,255,.65); font-size: 12px; }
 
 .camara-sync-action { display: flex; align-items: flex-end; flex-direction: column; gap: 7px; }
+.camara-sync-buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .camara-sync-message { max-width: 410px; margin: 0; color: #087d30; font-size: 9px; text-align: right; }
 .camara-sync-message.is-error { color: #a72d39; }
 .admin-stats--four { grid-template-columns: repeat(4, 1fr); }
@@ -2984,6 +2985,7 @@ img {
   .legislative-source-note { align-items: flex-start; flex-direction: column; }
   .legislative-source-note .button { width: 100%; }
   .camara-sync-action { width: 100%; align-items: stretch; }
+  .camara-sync-buttons { align-items: stretch; flex-direction: column; }
   .camara-sync-message { text-align: left; }
   .camara-status-grid { grid-template-columns: 1fr; }
 }

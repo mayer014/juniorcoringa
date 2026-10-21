@@ -669,6 +669,15 @@ export function getLegislativeCounts() {
   };
 }
 
+export function updateLegislativeItemTitle(id: number, title: string) {
+  const now = new Date().toISOString();
+  return db.prepare(`
+    UPDATE legislative_items
+    SET title = ?, updated_at = ?
+    WHERE id = ? AND title <> ?
+  `).run(title, now, id, title).changes > 0;
+}
+
 export function upsertLegislativeItem(input: LegislativeItemInput) {
   const existing = db.prepare(
     "SELECT * FROM legislative_items WHERE external_id = ?",

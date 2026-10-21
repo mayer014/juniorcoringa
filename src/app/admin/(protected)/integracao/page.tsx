@@ -15,7 +15,7 @@ export default function IntegrationPage() {
         <div>
           <span>Dados oficiais</span>
           <h1>Integração com a Câmara</h1>
-          <p>Notícias, indicações e projetos do vereador atualizados diariamente às 06:00, no horário de Campo Grande.</p>
+          <p>A rotina diária consulta apenas o ano atual. O histórico completo de leis possui uma importação separada e não busca indicações antigas.</p>
         </div>
         <CamaraSyncButton />
       </div>

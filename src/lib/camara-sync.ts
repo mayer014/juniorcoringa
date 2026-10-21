@@ -7,7 +7,9 @@ import {
   finishCamaraSyncRun,
   getLegislativeItemByExternalId,
   isCamaraSyncRunning,
+  listLegislativeItems,
   startCamaraSyncRun,
+  updateLegislativeItemTitle,
   upsertLegislativeItem,
 } from "@/lib/db";
 import type { LegislativeItemInput, LegislativeStatusGroup } from "@/lib/types";
@@ -15,7 +17,6 @@ import type { LegislativeItemInput, LegislativeStatusGroup } from "@/lib/types";
 const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
 const CAMARA_RSS_URL = "https://www.camara.ms.gov.br/jsonweb/web-rss.php";
 const VEREADOR_NAME = "Junior Coringa";
-const FIRST_IMPORT_YEAR = 2024;
 const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
@@ -36,6 +37,7 @@ type IndicationDetails = {
 };
 
 export type CamaraSyncResult = {
+  mode: CamaraSyncMode;
   found: number;
   inserted: number;
   updated: number;
@@ -44,7 +46,10 @@ export type CamaraSyncResult = {
   projects: number;
   indications: number;
   pdfDetails: number;
+  retitled: number;
 };
+
+export type CamaraSyncMode = "daily" | "history";
 
 function normalizeText(value: unknown) {
   return he.decode(String(value ?? ""))
@@ -99,6 +104,47 @@ function concise(value: string, maximum = 150) {
   return `${shortened}…`;
 }
 
+function projectTitle(summary: string) {
+  const title = sentenceCase(summary)
+    .replace(/^["“”']+|["“”']+$/g, "")
+    .replace(/^Dispõe sobre (?:a |o |as |os )?/i, "")
+    .replace(/^Estabelece (?:a |o |as |os )?/i, "")
+    .replace(/,?\s+(?:no âmbito d[eo]|no|do) município de Campo Grande(?:\s*[-–/]?\s*MS)?(?=,?\s+e dá outras providências|[. ]*$)/i, "")
+    .replace(/,?\s+e dá outras providências[. ]*$/i, "")
+    .replace(/[.]$/, "")
+    .trim();
+  return concise(sentenceCase(title), 105);
+}
+
+function indicationServiceTitle(service: string) {
+  const normalized = normalizeForComparison(service);
+  const rules: Array<[RegExp, string]> = [
+    [/tapa.?buraco/, "Operação tapa-buracos"],
+    [/patrolamento.*cascalhamento|cascalhamento.*patrolamento/, "Patrolamento e cascalhamento"],
+    [/cascalhamento.*regularizacao|regularizacao.*cascalhamento/, "Cascalhamento e regularização"],
+    [/pavimentacao|asfaltamento/, "Pavimentação da via"],
+    [/limpeza.*rocada|rocada.*limpeza|capinagem/, "Limpeza e roçada"],
+    [/iluminacao|refletor|fiacao eletrica|lampada|luminaria/, "Manutenção da iluminação"],
+    [/lombada|quebra.?mola/, "Instalação de lombada"],
+    [/drenagem|aguas pluviais/, "Drenagem e melhoria da via"],
+    [/sinalizacao/, "Sinalização viária"],
+    [/poda|arvore/, "Poda e manejo de árvores"],
+    [/semaforo/, "Instalação e manutenção semafórica"],
+    [/faixa.*pedestre/, "Implantação de faixa de pedestres"],
+    [/praca publica|pracas publicas/, "Revitalização de praça pública"],
+    [/rede de esgoto|instalacao de esgoto/, "Instalação e reparo da rede de esgoto"],
+    [/limpeza.*(?:area|terreno) public|limpeza de terreno/, "Limpeza de área pública"],
+  ];
+  const matched = rules.find(([pattern]) => pattern.test(normalized));
+  if (matched) return matched[1];
+  const firstIdea = service
+    .replace(/^\d+\s*[-–—]\s*/, "")
+    .split(/\s+[—–-]\s+|[;:]|,\s+(?:na|no|em|para)\s+/i)[0]
+    .replace(/[.]$/, "")
+    .trim();
+  return concise(firstIdea || service, 78);
+}
+
 function normalizeProjectStatus(status: string): LegislativeStatusGroup {
   const normalized = normalizeForComparison(status);
   if (/arquivad|rejeitad|retirad|prejudicad|vetado totalmente/.test(normalized)) return "archived";
@@ -138,7 +184,7 @@ async function fetchDataTable(url: URL) {
   return json;
 }
 
-async function fetchLegislativeRows(endpoint: "Ato" | "Documento", category: "projeto" | "documento", year: number) {
+async function fetchLegislativeRows(endpoint: "Ato" | "Documento", category: "projeto" | "documento", year?: number) {
   const rows: unknown[][] = [];
   let expected = Number.POSITIVE_INFINITY;
   for (let start = 0, draw = 1; start < expected; start += PAGE_SIZE, draw += 1) {
@@ -147,7 +193,7 @@ async function fetchLegislativeRows(endpoint: "Ato" | "Documento", category: "pr
     url.searchParams.set("captcha", "");
     url.searchParams.set("busca", "");
     url.searchParams.set("nome_vereadores", VEREADOR_NAME);
-    url.searchParams.set("ano_filter", String(year));
+    if (year) url.searchParams.set("ano_filter", String(year));
     url.searchParams.set("draw", String(draw));
     url.searchParams.set("start", String(start));
     url.searchParams.set("length", String(PAGE_SIZE));
@@ -158,7 +204,7 @@ async function fetchLegislativeRows(endpoint: "Ato" | "Documento", category: "pr
     if (!pageRows.length || pageRows.length < PAGE_SIZE) break;
   }
   if (Number.isFinite(expected) && rows.length < expected) {
-    throw new Error(`Consulta incompleta de ${category}/${year}: recebidos ${rows.length} de ${expected} registros.`);
+    throw new Error(`Consulta incompleta de ${category}/${year ?? "histórico"}: recebidos ${rows.length} de ${expected} registros.`);
   }
   return rows;
 }
@@ -193,11 +239,11 @@ function projectFromRow(row: unknown[]): LegislativeItemInput | null {
     type,
     number,
     year,
-    title: concise(summary),
+    title: projectTitle(summary),
     summary,
     author: author || VEREADOR_NAME,
     status,
-    statusGroup: normalizeProjectStatus(status),
+    statusGroup: law.lawUrl ? "approved" : normalizeProjectStatus(status),
     sourceUrl,
     location: null,
     neighborhood: null,
@@ -225,7 +271,8 @@ function cleanPdfText(value: string) {
 function extractNeighborhood(text: string) {
   const patterns = [
     /Bairro:\s*([^,\n]+?)(?:,\s*Campo|,\s*CEP|\n|$)/i,
-    /BAIRRO\s+([A-ZÀ-Ý0-9 .'-]+?)(?:,\s*CEP|\s+CEP|,\s*EM CAMPO|,\s*CAMPO|\n)/,
+    /BAIRRO\s+([A-ZÀ-Ý0-9 .'-]+?)(?:,\s*CEP|\s+CEP|,\s*EM CAMPO|,\s*CAMPO|\n)/i,
+    /(?:NA\s+)?REGIÃO\s+(?:DO|DA|DE)\s+([A-ZÀ-Ý0-9 .'-]+?)(?:,\s*EM CAMPO|,\s*CAMPO|\n)/i,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern)?.[1];
@@ -234,18 +281,38 @@ function extractNeighborhood(text: string) {
   return null;
 }
 
+function cleanLocation(value: string) {
+  const cleaned = normalizeText(value)
+    .replace(/^completo:\s*/i, "")
+    .replace(/,?\s*Complemento:\s*$/i, "")
+    .replace(/\s*CEP Busca\s*$/i, "")
+    .replace(/,\s*n[º°o.]?\s*(?=,|Bairro:|CEP:|$)/gi, "")
+    .replace(/,?\s*(?:Bairro|CEP):\s*(?=,|$)/gi, "")
+    .replace(/\s*,\s*,+/g, ", ")
+    .replace(/^\s*[,;:-]+|[,;:-]+\s*$/g, "")
+    .replace(/[.]$/, "")
+    .trim();
+  return /\p{L}{3}/u.test(cleaned) ? cleaned : null;
+}
+
 function extractLocation(text: string) {
   const section = text.match(/(?:4\D{0,4})?ENDEREÇO\s+([\s\S]*?)(?:Endereço completo:|Junior Coringa|$)/i)?.[1];
   if (section) {
-    const cleaned = normalizeText(section)
-      .replace(/^completo:\s*/i, "")
-      .replace(/,?\s*Complemento:\s*$/i, "")
-      .replace(/\s*CEP Busca\s*$/i, "")
-      .replace(/[.]$/, "");
+    const cleaned = cleanLocation(section);
     if (cleaned) return cleaned;
   }
-  const request = text.match(/((?:RUA|AVENIDA|ALAMEDA|TRAVESSA|ESTRADA|PRAÇA|RODOVIA)\s+[A-ZÀ-Ý0-9 .,'º°-]+?)(?:,\s*(?:ESPECIALMENTE|BAIRRO|CEP|EM CAMPO)|\s+BAIRRO|\n)/)?.[1];
-  return request ? sentenceCase(request) : null;
+  const streets = text.match(/\bNAS?\s+RUAS?\s+([\s\S]+?)(?=,\s*(?:NA\s+REGIÃO|NO\s+BAIRRO|EM\s+CAMPO)|\n\s*(?:NA\s+REGIÃO|NO\s+BAIRRO|EM\s+CAMPO))/i)?.[1];
+  if (streets) return cleanLocation(`Ruas ${sentenceCase(streets)}`);
+  const request = text.match(/((?:RUA|AVENIDA|ALAMEDA|TRAVESSA|ESTRADA|PRAÇA|RODOVIA)\s+[A-ZÀ-Ý0-9 .,'º°-]+?)(?:,\s*(?:ESPECIALMENTE|BAIRRO|CEP|EM CAMPO)|\s+BAIRRO|\n)/i)?.[1]
+    ?? text.match(/\b(?:na|no)\s+((?:rua|avenida|alameda|travessa|estrada|praça|rodovia)\s+[^,.;\n]+)/i)?.[1];
+  return request ? cleanLocation(sentenceCase(request)) : null;
+}
+
+function extractRequestedService(text: string) {
+  const request = text.match(
+    /SOLICITANDO\s+QUE\s+PROVIDENCIE[;:]?\s*((?:A|O)\s+[\s\S]+?)(?=\s+NAS?\s+(?:RUAS?|AVENIDAS?)|\s+(?:NO\s+BAIRRO|NA\s+REGIÃO)|[.]\s)/i,
+  )?.[1];
+  return request ? sentenceCase(normalizeText(request).replace(/[;,]+$/, "")) : null;
 }
 
 function buildIndicationDetails(summaryValue: string, pdfText: string | null): IndicationDetails {
@@ -253,11 +320,27 @@ function buildIndicationDetails(summaryValue: string, pdfText: string | null): I
   const fullText = pdfText ? cleanPdfText(pdfText) : null;
   const location = fullText ? extractLocation(fullText) : extractLocation(summary);
   const neighborhood = fullText ? extractNeighborhood(fullText) : extractNeighborhood(summary);
-  const service = summary || "Solicitação de melhoria urbana";
-  const primaryLocation = location?.split(/,\s*(?:proximidades|bairro|cep|campo grande)/i)[0]?.trim() ?? null;
+  const requestedService = fullText ? extractRequestedService(fullText) : null;
+  const filenameLikeSummary = /^indicacao\s+/i.test(normalizeForComparison(summary));
+  const service = (filenameLikeSummary ? requestedService : null) || summary || requestedService || "Solicitação de melhoria urbana";
+  const shortService = indicationServiceTitle(service);
+  const primaryLocation = cleanLocation(location?.split(/,\s*(?:proximidades|bairro|cep|campo grande)/i)[0]?.trim() ?? "");
   const locationAlreadyPresent = primaryLocation && normalizeForComparison(service).includes(normalizeForComparison(primaryLocation));
-  const title = concise(locationAlreadyPresent || !primaryLocation ? service : `${service} — ${primaryLocation}`, 165);
+  const title = concise(locationAlreadyPresent || !primaryLocation ? shortService : `${shortService} — ${primaryLocation}`, 120);
   return { location, neighborhood, service, fullText, title };
+}
+
+function retitleStoredIndications() {
+  let retitled = 0;
+  for (let offset = 0; ; offset += 500) {
+    const items = listLegislativeItems({ kind: "indication", limit: 500, offset });
+    for (const item of items) {
+      const title = buildIndicationDetails(item.summary, item.fullText).title;
+      if (updateLegislativeItemTitle(item.id, title)) retitled += 1;
+    }
+    if (items.length < 500) break;
+  }
+  return retitled;
 }
 
 async function fetchPdfText(sourceUrl: string) {
@@ -372,25 +455,29 @@ async function fetchOfficialNews() {
   });
 }
 
-export async function syncCamaraData(): Promise<CamaraSyncResult> {
+export async function syncCamaraData(mode: CamaraSyncMode = "daily"): Promise<CamaraSyncResult> {
   if (isCamaraSyncRunning()) throw new Error("Já existe uma sincronização da Câmara em andamento.");
   const runId = startCamaraSyncRun();
   try {
     const currentYear = new Date().getFullYear();
-    const years = Array.from({ length: currentYear - FIRST_IMPORT_YEAR + 1 }, (_, index) => currentYear - index);
-    const [projectPages, indicationPages, news] = await Promise.all([
-      Promise.all(years.map((year) => fetchLegislativeRows("Ato", "projeto", year))),
-      Promise.all(years.map((year) => fetchLegislativeRows("Documento", "documento", year))),
-      fetchOfficialNews(),
-    ]);
-    const projects = projectPages.flat().map(projectFromRow).filter((item): item is LegislativeItemInput => Boolean(item));
-    const indicationRows = indicationPages.flat().sort((a, b) => parseBrazilianDate(b[3]).localeCompare(parseBrazilianDate(a[3])));
+    const [projectRows, indicationRows, news] = mode === "history"
+      ? [await fetchLegislativeRows("Ato", "projeto"), [], []]
+      : await Promise.all([
+          fetchLegislativeRows("Ato", "projeto", currentYear),
+          fetchLegislativeRows("Documento", "documento", currentYear),
+          fetchOfficialNews(),
+        ]);
+    const projects = projectRows
+      .map(projectFromRow)
+      .filter((item): item is LegislativeItemInput => Boolean(item))
+      .filter((item) => mode === "daily" || Boolean(item.lawUrl));
+    indicationRows.sort((a, b) => parseBrazilianDate(b[3]).localeCompare(parseBrazilianDate(a[3])));
     let remainingPdfDetails = Number.isFinite(PDF_DETAILS_PER_RUN) ? Math.max(PDF_DETAILS_PER_RUN, 0) : 50;
     const parsedIndications = await mapWithConcurrency(indicationRows, 4, async (row) => {
       const documentId = normalizeText(row[7]);
       const existing = documentId ? getLegislativeItemByExternalId(`camara-indication:${documentId}`) : null;
       const isIndication = normalizeForComparison(getDefinitionValue(row[0], "Tipo")) === "indicacao";
-      const loadPdf = isIndication && !existing?.fullText && remainingPdfDetails > 0;
+      const loadPdf = isIndication && !existing && remainingPdfDetails > 0;
       if (loadPdf) remainingPdfDetails -= 1;
       return indicationFromRow(row, loadPdf);
     });
@@ -400,7 +487,9 @@ export async function syncCamaraData(): Promise<CamaraSyncResult> {
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
     let newsInserted = 0;
     for (const item of news) if (createOfficialNewsPost(item)) newsInserted += 1;
+    const retitled = retitleStoredIndications();
     const result: CamaraSyncResult = {
+      mode,
       found: items.length,
       inserted: counts.inserted,
       updated: counts.updated,
@@ -409,6 +498,7 @@ export async function syncCamaraData(): Promise<CamaraSyncResult> {
       projects: projects.length,
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,
+      retitled,
     };
     finishCamaraSyncRun(runId, { status: "success", ...result });
     return result;

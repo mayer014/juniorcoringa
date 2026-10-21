@@ -65,7 +65,9 @@ curl --fail --silent --show-error --max-time 900 \
 
 Substitua `SEU_CAMARA_SYNC_SECRET` pelo mesmo valor configurado no aplicativo. O agendador deve usar `America/Cuiaba`. Se ele operar exclusivamente em UTC, use `0 10 * * *`, equivalente às 06:00 de Campo Grande. A rota impede execuções simultâneas e a navegação de visitantes não dispara sincronizações.
 
-Após a primeira implantação desta integração, execute a rota manualmente uma vez para carregar o histórico desde 2024. A sincronização importa todos os registros imediatamente e detalha até `CAMARA_PDF_DETAILS_LIMIT` PDFs ainda não processados por execução, começando pelos mais recentes.
+Após a implantação, use **Sincronizar agora** no painel para buscar somente os registros do ano corrente. Essa rotina é incremental, não revisita anos anteriores e só abre o PDF de uma indicação quando ela ainda não existe no banco.
+
+Use **Importar histórico de leis** uma vez para carregar todos os projetos antigos que possuam vínculo oficial com lei aprovada. Essa importação não busca indicações antigas. As duas rotinas são idempotentes: podem ser executadas novamente sem duplicar registros.
 
 ## 6. Faça o deploy
 
