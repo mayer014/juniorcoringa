@@ -70,7 +70,11 @@ type SyncRunRow = {
   found: number;
   inserted: number;
   updated: number;
+  unchanged: number;
   news_inserted: number;
+  news_updated: number;
+  mode: "daily" | "history" | "indications";
+  trigger_source: "manual" | "scheduled";
   error: string | null;
 };
 
@@ -162,7 +166,11 @@ function openDatabase() {
       found INTEGER NOT NULL DEFAULT 0,
       inserted INTEGER NOT NULL DEFAULT 0,
       updated INTEGER NOT NULL DEFAULT 0,
+      unchanged INTEGER NOT NULL DEFAULT 0,
       news_inserted INTEGER NOT NULL DEFAULT 0,
+      news_updated INTEGER NOT NULL DEFAULT 0,
+      mode TEXT NOT NULL DEFAULT 'daily',
+      trigger_source TEXT NOT NULL DEFAULT 'manual',
       error TEXT
     );
 
@@ -190,9 +198,16 @@ export const db = globalForDb.juniorCoringaDb ?? openDatabase();
 export function getDatabaseStorageStatus() {
   if (process.platform === "win32") return { dataDir, persistentMountDetected: true };
   try {
+    const normalizedDataDir = path.resolve(dataDir);
+    const mounts = fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n");
+    const persistentMountDetected = mounts.some((line) => {
+      const fields = line.split(" ");
+      const mountPoint = fields[4]?.replace(/\\040/g, " ").replace(/\\011/g, "\t");
+      return mountPoint ? path.resolve(mountPoint) === normalizedDataDir : false;
+    });
     return {
       dataDir,
-      persistentMountDetected: fs.statSync(dataDir).dev !== fs.statSync(process.cwd()).dev,
+      persistentMountDetected,
     };
   } catch {
     return { dataDir, persistentMountDetected: false };
@@ -242,7 +257,11 @@ db.exec(`
     found INTEGER NOT NULL DEFAULT 0,
     inserted INTEGER NOT NULL DEFAULT 0,
     updated INTEGER NOT NULL DEFAULT 0,
+    unchanged INTEGER NOT NULL DEFAULT 0,
     news_inserted INTEGER NOT NULL DEFAULT 0,
+    news_updated INTEGER NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'daily',
+    trigger_source TEXT NOT NULL DEFAULT 'manual',
     error TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
@@ -265,6 +284,19 @@ const legislativeMigrations = [
 for (const [name, type] of legislativeMigrations) {
   if (!legislativeColumns.some((column) => column.name === name)) {
     db.exec(`ALTER TABLE legislative_items ADD COLUMN ${name} ${type}`);
+  }
+}
+
+const syncRunColumns = db.prepare("PRAGMA table_info(camara_sync_runs)").all() as Array<{ name: string }>;
+const syncRunMigrations = [
+  ["unchanged", "INTEGER NOT NULL DEFAULT 0"],
+  ["news_updated", "INTEGER NOT NULL DEFAULT 0"],
+  ["mode", "TEXT NOT NULL DEFAULT 'daily'"],
+  ["trigger_source", "TEXT NOT NULL DEFAULT 'manual'"],
+] as const;
+for (const [name, type] of syncRunMigrations) {
+  if (!syncRunColumns.some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE camara_sync_runs ADD COLUMN ${name} ${type}`);
   }
 }
 
@@ -349,7 +381,11 @@ function mapSyncRun(row: SyncRunRow | undefined): CamaraSyncRun | null {
     found: row.found,
     inserted: row.inserted,
     updated: row.updated,
+    unchanged: row.unchanged,
     newsInserted: row.news_inserted,
+    newsUpdated: row.news_updated,
+    mode: row.mode,
+    triggerSource: row.trigger_source,
     error: row.error,
   };
 }
@@ -825,27 +861,43 @@ export function createOfficialNewsPost(input: {
   sourceId: string;
   sourceUrl: string;
   title: string;
-  excerpt: string;
+  excerpt: string | null;
+  content: string | null;
+  coverImage: string | null;
   publishedAt: string;
 }) {
-  const existing = db.prepare("SELECT id FROM posts WHERE source_id = ?").get(input.sourceId) as { id: number } | undefined;
-  if (existing) return false;
+  const existing = db.prepare("SELECT * FROM posts WHERE source_id = ?").get(input.sourceId) as PostRow | undefined;
   const now = new Date().toISOString();
+  if (existing) {
+    const coverImage = input.coverImage || existing.cover_image;
+    const excerpt = input.excerpt || existing.excerpt;
+    const content = input.content || existing.content;
+    const changed = existing.title !== input.title || existing.excerpt !== excerpt ||
+      existing.content !== content || existing.cover_image !== coverImage ||
+      existing.published_at !== input.publishedAt;
+    if (!changed) return "unchanged" as const;
+    db.prepare(`
+      UPDATE posts SET title = ?, excerpt = ?, content = ?, cover_image = ?, published_at = ?,
+        updated_at = ?, source_url = ? WHERE id = ?
+    `).run(input.title, excerpt, content, coverImage, input.publishedAt, now, input.sourceUrl, existing.id);
+    return "updated" as const;
+  }
   const slug = getUniqueSlug(input.title);
-  const content = `${input.excerpt}\n\nEsta publicação foi identificada no portal oficial da Câmara Municipal de Campo Grande.\n\n[Leia a matéria completa na Câmara Municipal](${input.sourceUrl})`;
+  const excerpt = input.excerpt || "Notícia publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa.";
+  const content = input.content || `${excerpt}\n\n[Leia a matéria completa na Câmara Municipal](${input.sourceUrl})`;
   db.prepare(`
     INSERT INTO posts
       (title, slug, excerpt, content, category, status, cover_image, featured, published_at,
        created_at, updated_at, source_id, source_url)
-    VALUES (?, ?, ?, ?, 'Notícia', 'published', NULL, 0, ?, ?, ?, ?, ?)
-  `).run(input.title, slug, input.excerpt, content, input.publishedAt, now, now, input.sourceId, input.sourceUrl);
-  return true;
+    VALUES (?, ?, ?, ?, 'Notícia', 'published', ?, 0, ?, ?, ?, ?, ?)
+  `).run(input.title, slug, excerpt, content, input.coverImage, input.publishedAt, now, now, input.sourceId, input.sourceUrl);
+  return "inserted" as const;
 }
 
-export function startCamaraSyncRun() {
+export function startCamaraSyncRun(mode: "daily" | "history" | "indications", triggerSource: "manual" | "scheduled") {
   const result = db.prepare(
-    "INSERT INTO camara_sync_runs (started_at, status) VALUES (?, 'running')",
-  ).run(new Date().toISOString());
+    "INSERT INTO camara_sync_runs (started_at, status, mode, trigger_source) VALUES (?, 'running', ?, ?)",
+  ).run(new Date().toISOString(), mode, triggerSource);
   return Number(result.lastInsertRowid);
 }
 
@@ -854,15 +906,18 @@ export function finishCamaraSyncRun(id: number, result: {
   found?: number;
   inserted?: number;
   updated?: number;
+  unchanged?: number;
   newsInserted?: number;
+  newsUpdated?: number;
   error?: string | null;
 }) {
   db.prepare(`
     UPDATE camara_sync_runs SET finished_at = ?, status = ?, found = ?, inserted = ?, updated = ?,
-      news_inserted = ?, error = ? WHERE id = ?
+      unchanged = ?, news_inserted = ?, news_updated = ?, error = ? WHERE id = ?
   `).run(
     new Date().toISOString(), result.status, result.found ?? 0, result.inserted ?? 0,
-    result.updated ?? 0, result.newsInserted ?? 0, result.error ?? null, id,
+    result.updated ?? 0, result.unchanged ?? 0, result.newsInserted ?? 0,
+    result.newsUpdated ?? 0, result.error ?? null, id,
   );
 }
 

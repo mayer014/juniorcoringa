@@ -3,7 +3,7 @@ import Link from "next/link";
 import { CamaraSyncButton } from "@/components/admin/camara-sync-button";
 import { LegislativeManager } from "@/components/admin/legislative-manager";
 import { countAdminLegislativeItems, getDatabaseStorageStatus, getLatestCamaraSyncRun, getLegislativeCounts, listAdminLegislativeItems } from "@/lib/db";
-import { formatDate } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import type { LegislativeKind } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -61,12 +61,16 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
         <div className="admin-list-card__heading"><h2>Última sincronização</h2><Activity size={20} /></div>
         {latest ? (
           <div className="camara-status-grid">
-            <div><small>Início</small><strong>{formatDate(latest.startedAt)}</strong></div>
+            <div><small>Início</small><strong>{formatDateTime(latest.startedAt)}</strong></div>
+            <div><small>Origem</small><strong>{latest.triggerSource === "scheduled" ? "Automática (06:00)" : "Manual"}</strong></div>
+            <div><small>Rotina</small><strong>{latest.mode === "history" ? "Histórico de leis" : latest.mode === "indications" ? "Histórico de indicações" : "Atualização diária"}</strong></div>
             <div><small>Situação</small><strong className={`sync-status sync-status--${latest.status}`}>{latest.status === "success" ? "Concluída" : latest.status === "running" ? "Em andamento" : "Erro"}</strong></div>
             <div><small>Encontrados</small><strong>{latest.found}</strong></div>
             <div><small>Novos</small><strong>{latest.inserted}</strong></div>
             <div><small>Atualizados</small><strong>{latest.updated}</strong></div>
+            <div><small>Preservados</small><strong>{latest.unchanged}</strong></div>
             <div><small>Matérias novas</small><strong>{latest.newsInserted}</strong></div>
+            <div><small>Matérias enriquecidas</small><strong>{latest.newsUpdated}</strong></div>
             {latest.error && <p className="camara-status-error">{latest.error}</p>}
           </div>
         ) : (

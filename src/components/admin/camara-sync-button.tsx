@@ -22,14 +22,14 @@ export function CamaraSyncButton() {
       });
       const payload = await response.json() as {
         error?: string;
-        result?: { inserted: number; updated: number; newsInserted: number; retitled: number };
+        result?: { inserted: number; updated: number; unchanged: number; newsInserted: number; newsUpdated: number; retitled: number };
       };
       if (!response.ok || !payload.result) throw new Error(payload.error || "Não foi possível sincronizar.");
       setMessage(mode === "history"
         ? `${payload.result.inserted} leis históricas novas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
         : mode === "indications"
           ? `${payload.result.inserted} indicações históricas recuperadas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
-          : `${payload.result.inserted} novos registros, ${payload.result.updated} atualizados, ${payload.result.retitled} títulos simplificados e ${payload.result.newsInserted} novas matérias.`);
+          : `${payload.result.inserted} novos registros, ${payload.result.updated} atualizados, ${payload.result.unchanged} preservados, ${payload.result.retitled} títulos simplificados, ${payload.result.newsInserted} novas matérias e ${payload.result.newsUpdated} matérias enriquecidas.`);
       router.refresh();
     } catch (caught) {
       setError(true);

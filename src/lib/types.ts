@@ -102,6 +102,10 @@ export type CamaraSyncRun = {
   found: number;
   inserted: number;
   updated: number;
+  unchanged: number;
   newsInserted: number;
+  newsUpdated: number;
+  mode: "daily" | "history" | "indications";
+  triggerSource: "manual" | "scheduled";
   error: string | null;
 };

@@ -1,7 +1,11 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import * as he from "he";
+import TurndownService from "turndown";
 import {
   createOfficialNewsPost,
   finishCamaraSyncRun,
@@ -20,6 +24,9 @@ const VEREADOR_NAME = "Junior Coringa";
 const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
+const DATA_DIR = path.resolve(
+  /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
+);
 
 type DataTableResponse = {
   data?: unknown[][];
@@ -43,6 +50,7 @@ export type CamaraSyncResult = {
   updated: number;
   unchanged: number;
   newsInserted: number;
+  newsUpdated: number;
   projects: number;
   indications: number;
   pdfDetails: number;
@@ -50,6 +58,7 @@ export type CamaraSyncResult = {
 };
 
 export type CamaraSyncMode = "daily" | "history" | "indications";
+export type CamaraSyncTrigger = "manual" | "scheduled";
 
 function normalizeText(value: unknown) {
   return he.decode(String(value ?? ""))
@@ -428,6 +437,96 @@ async function mapWithConcurrency<T, R>(values: T[], concurrency: number, mapper
   return result;
 }
 
+function metaContent(html: string, property: string) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const direct = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`, "i"));
+  const reversed = html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`, "i"));
+  return he.decode(direct?.[1] || reversed?.[1] || "").trim();
+}
+
+function extractOfficialArticleBody(html: string) {
+  const end = html.search(/<div[^>]+class=["'][^"']*botao_avisos/i);
+  if (end < 0) return "";
+  const before = html.slice(0, end);
+  const starts = [...before.matchAll(/<div>\s*<strong>/gi)];
+  const start = starts.at(-1)?.index;
+  if (start === undefined) return "";
+  return before.slice(start + "<div>".length).replace(/<\/div>\s*$/i, "").trim();
+}
+
+function markdownExcerpt(markdown: string) {
+  const text = markdown
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/[*_#>`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return concise(text, 300);
+}
+
+async function downloadOfficialCover(imageUrl: string) {
+  if (!imageUrl) return null;
+  const response = await fetchWithRetry(imageUrl, {
+    headers: { "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)" },
+    cache: "no-store",
+  }, `Imagem ${imageUrl}`);
+  if (!response.ok) throw new Error(`Imagem oficial respondeu HTTP ${response.status}.`);
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.toLowerCase() || "";
+  const extensions: Record<string, string> = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+  };
+  const extension = extensions[contentType];
+  if (!extension) throw new Error(`Formato de imagem oficial não permitido: ${contentType || "desconhecido"}.`);
+  const uploadsDir = path.join(DATA_DIR, "uploads");
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const filename = `camara-${createHash("sha256").update(imageUrl).digest("hex").slice(0, 24)}${extension}`;
+  const destination = path.join(uploadsDir, filename);
+  try {
+    await fs.access(destination);
+  } catch {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > 12 * 1024 * 1024) throw new Error("Imagem oficial excede 12 MB.");
+    const temporary = `${destination}.tmp-${process.pid}`;
+    await fs.writeFile(temporary, bytes);
+    await fs.rename(temporary, destination);
+  }
+  return `/media/${filename}`;
+}
+
+async function fetchOfficialNewsDetails(sourceUrl: string) {
+  const response = await fetchWithRetry(sourceUrl, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
+    },
+    cache: "no-store",
+  }, `Matéria ${sourceUrl}`);
+  if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
+  const html = await response.text();
+  const bodyHtml = extractOfficialArticleBody(html);
+  if (!bodyHtml) throw new Error("O texto completo da matéria não foi localizado.");
+  const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+  const article = turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim();
+  if (article.length < 80) throw new Error("O texto extraído da matéria está incompleto.");
+  const imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
+  let coverImage: string | null = null;
+  if (imageUrl) {
+    try {
+      coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
+    } catch (error) {
+      console.warn(`Não foi possível salvar a capa de ${sourceUrl}:`, error);
+    }
+  }
+  return {
+    excerpt: markdownExcerpt(article),
+    content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
+    coverImage,
+  };
+}
+
 async function fetchOfficialNews() {
   const response = await fetchWithRetry(CAMARA_RSS_URL, {
     headers: { Accept: "application/rss+xml, application/xml, text/xml" },
@@ -438,26 +537,35 @@ async function fetchOfficialNews() {
   const parsed = new XMLParser({ ignoreAttributes: false }).parse(xml) as { rss?: { channel?: { item?: unknown | unknown[] } } };
   const rawItems = parsed.rss?.channel?.item;
   const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
-  return items.flatMap((raw) => {
+  const summaries = items.flatMap((raw) => {
     const item = raw as { title?: string; description?: string; link?: string; guid?: string; pubDate?: string };
     if (!containsJunior(`${item.title ?? ""} ${item.description ?? ""}`)) return [];
     const sourceUrl = String(item.link ?? item.guid ?? "").trim();
     const title = normalizeText(item.title);
     if (!sourceUrl || !title) return [];
-    const description = normalizeText(item.description);
     return [{
       sourceId: `camara-rss:${String(item.guid ?? sourceUrl)}`,
       sourceUrl,
       title,
-      excerpt: description || "Notícia publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa.",
+      excerpt: normalizeText(item.description) || null,
+      content: null as string | null,
+      coverImage: null as string | null,
       publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
     }];
   });
+  return mapWithConcurrency(summaries, 3, async (item) => {
+    try {
+      return { ...item, ...await fetchOfficialNewsDetails(item.sourceUrl) };
+    } catch (error) {
+      console.warn(`Não foi possível enriquecer a matéria ${item.sourceUrl}:`, error);
+      return item;
+    }
+  });
 }
 
-export async function syncCamaraData(mode: CamaraSyncMode = "daily"): Promise<CamaraSyncResult> {
+export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual"): Promise<CamaraSyncResult> {
   if (isCamaraSyncRunning()) throw new Error("Já existe uma sincronização da Câmara em andamento.");
-  const runId = startCamaraSyncRun();
+  const runId = startCamaraSyncRun(mode, trigger);
   try {
     const currentYear = new Date().getFullYear();
     const [projectRows, indicationRows, news] = mode === "history"
@@ -487,8 +595,8 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily"): Promise<Ca
     const items = [...projects, ...indications];
     const counts = { inserted: 0, updated: 0, unchanged: 0 };
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
-    let newsInserted = 0;
-    for (const item of news) if (createOfficialNewsPost(item)) newsInserted += 1;
+    const newsCounts = { inserted: 0, updated: 0, unchanged: 0 };
+    for (const item of news) newsCounts[createOfficialNewsPost(item)] += 1;
     const retitled = retitleStoredIndications();
     const result: CamaraSyncResult = {
       mode,
@@ -496,7 +604,8 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily"): Promise<Ca
       inserted: counts.inserted,
       updated: counts.updated,
       unchanged: counts.unchanged,
-      newsInserted,
+      newsInserted: newsCounts.inserted,
+      newsUpdated: newsCounts.updated,
       projects: projects.length,
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,

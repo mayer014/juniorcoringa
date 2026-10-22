@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   }
   try {
-    const result = await syncCamaraData();
+    const result = await syncCamaraData("daily", "scheduled");
     revalidatePath("/");
     revalidatePath("/noticias");
     revalidatePath("/atuacao-legislativa");
