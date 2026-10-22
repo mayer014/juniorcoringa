@@ -445,13 +445,19 @@ function metaContent(html: string, property: string) {
 }
 
 function extractOfficialArticleBody(html: string) {
-  const end = html.search(/<div[^>]+class=["'][^"']*botao_avisos/i);
+  const afterImage = html.match(
+    /<a\b[^>]*class=["'][^"']*\bnoticia_imagem\b[^"']*["'][^>]*>[\s\S]*?<\/a>\s*([\s\S]*?)<div\b[^>]*class=["'][^"']*\bbotao_avisos\b/i,
+  )?.[1]?.trim();
+  if (afterImage) return afterImage;
+
+  const end = html.search(/<div\b[^>]*class=["'][^"']*\bbotao_avisos\b/i);
   if (end < 0) return "";
-  const before = html.slice(0, end);
-  const starts = [...before.matchAll(/<div>\s*<strong>/gi)];
+  const articleStart = html.search(/<div\b[^>]*class=["'][^"']*\bpbw_main_article\b/i);
+  const before = html.slice(Math.max(articleStart, 0), end);
+  const starts = [...before.matchAll(/<div\b[^>]*>\s*<strong\b[^>]*>/gi)];
   const start = starts.at(-1)?.index;
   if (start === undefined) return "";
-  return before.slice(start + "<div>".length).replace(/<\/div>\s*$/i, "").trim();
+  return before.slice(start).trim();
 }
 
 function markdownExcerpt(markdown: string) {
