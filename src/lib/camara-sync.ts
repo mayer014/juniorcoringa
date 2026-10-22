@@ -460,6 +460,18 @@ function extractOfficialArticleBody(html: string) {
   return before.slice(start).trim();
 }
 
+function extractOfficialNarration(html: string) {
+  const encoded = html.match(/campo_value\s*:\s*'([\s\S]*?)'\s*}\s*\)\s*;/i)?.[1];
+  if (!encoded) return "";
+  return he.decode(encoded)
+    .replace(/\\'/g, "'")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\\\/g, "\\")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function markdownExcerpt(markdown: string) {
   const text = markdown
     .replace(/!\[[^\]]*]\([^)]*\)/g, "")
@@ -512,11 +524,6 @@ async function fetchOfficialNewsDetails(sourceUrl: string) {
   }, `Matéria ${sourceUrl}`);
   if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
   const html = await response.text();
-  const bodyHtml = extractOfficialArticleBody(html);
-  if (!bodyHtml) throw new Error("O texto completo da matéria não foi localizado.");
-  const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
-  const article = turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim();
-  if (article.length < 80) throw new Error("O texto extraído da matéria está incompleto.");
   const imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
   let coverImage: string | null = null;
   if (imageUrl) {
@@ -526,9 +533,16 @@ async function fetchOfficialNewsDetails(sourceUrl: string) {
       console.warn(`Não foi possível salvar a capa de ${sourceUrl}:`, error);
     }
   }
+  const bodyHtml = extractOfficialArticleBody(html);
+  const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+  const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
+  const article = converted.length >= 80 ? converted : extractOfficialNarration(html);
+  if (article.length < 80 && !coverImage) {
+    throw new Error("O texto e a imagem da matéria não foram localizados.");
+  }
   return {
-    excerpt: markdownExcerpt(article),
-    content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
+    excerpt: article ? markdownExcerpt(article) : null,
+    content: article ? `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})` : null,
     coverImage,
   };
 }
