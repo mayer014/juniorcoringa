@@ -20,6 +20,8 @@ import type { LegislativeItemInput, LegislativeStatusGroup } from "@/lib/types";
 
 const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
 const CAMARA_RSS_URL = "https://www.camara.ms.gov.br/jsonweb/web-rss.php";
+const CAMARA_API_URL = process.env.CAMARA_API_URL || "https://www.camara.ms.gov.br/jsonweb/web-aplicativo.php";
+const CAMARA_API_TOKEN = process.env.CAMARA_API_TOKEN || "";
 const VEREADOR_NAME = "Junior Coringa";
 const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
@@ -41,6 +43,14 @@ type IndicationDetails = {
   service: string;
   fullText: string | null;
   title: string;
+};
+
+type OfficialPublication = {
+  data?: string;
+  titulo?: string;
+  resumo?: string;
+  imagem?: string;
+  link?: string;
 };
 
 export type CamaraSyncResult = {
@@ -514,7 +524,62 @@ async function downloadOfficialCover(imageUrl: string) {
   return `/media/${filename}`;
 }
 
-async function fetchOfficialNewsDetails(sourceUrl: string) {
+async function fetchOfficialPublications() {
+  if (!CAMARA_API_TOKEN) return [] as OfficialPublication[];
+  const url = new URL(CAMARA_API_URL);
+  url.searchParams.set("keysoft", CAMARA_API_TOKEN);
+  url.searchParams.set("call", "publicacoes");
+  url.searchParams.set("tipo", "Noticias");
+  url.searchParams.set("pagina", "1");
+  const response = await fetchWithRetry(url, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  }, "API de notícias da Câmara");
+  if (!response.ok) throw new Error(`API de notícias respondeu HTTP ${response.status}.`);
+  const payload = await response.json() as unknown;
+  return Array.isArray(payload) ? payload as OfficialPublication[] : [];
+}
+
+async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: string) {
+  const publicationId = new URL(sourceUrl).pathname.match(/\/(\d+)\/?$/)?.[1];
+  let article = "";
+  if (publicationId) {
+    try {
+      const documentUrl = new URL("/legislarr/documento_print_doc.php", sourceUrl);
+      documentUrl.searchParams.set("documento_tipo", "noticia");
+      documentUrl.searchParams.set("documento", publicationId);
+      const documentResponse = await fetchWithRetry(documentUrl, {
+        headers: {
+          Accept: "text/html,application/msword,*/*",
+          "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
+        },
+        cache: "no-store",
+      }, `Documento da matéria ${publicationId}`);
+      if (documentResponse.ok) {
+        const documentHtml = await documentResponse.text();
+        const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+        article = turndown.turndown(documentHtml).replace(/\n{3,}/g, "\n\n").trim();
+      }
+    } catch (error) {
+      console.warn(`Não foi possível obter o documento oficial ${publicationId}:`, error);
+    }
+  }
+
+  let imageUrl = officialImage || "";
+  if (article.length >= 80 && imageUrl) {
+    let coverImage: string | null = null;
+    try {
+      coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
+    } catch (error) {
+      console.warn(`Não foi possível salvar a capa de ${sourceUrl}:`, error);
+    }
+    return {
+      excerpt: markdownExcerpt(article),
+      content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
+      coverImage,
+    };
+  }
+
   const response = await fetchWithRetry(sourceUrl, {
     headers: {
       Accept: "text/html,application/xhtml+xml",
@@ -524,7 +589,7 @@ async function fetchOfficialNewsDetails(sourceUrl: string) {
   }, `Matéria ${sourceUrl}`);
   if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
   const html = await response.text();
-  const imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
+  imageUrl ||= metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
   let coverImage: string | null = null;
   if (imageUrl) {
     try {
@@ -536,7 +601,7 @@ async function fetchOfficialNewsDetails(sourceUrl: string) {
   const bodyHtml = extractOfficialArticleBody(html);
   const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
   const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
-  const article = converted.length >= 80 ? converted : extractOfficialNarration(html);
+  article ||= converted.length >= 80 ? converted : extractOfficialNarration(html);
   if (article.length < 80 && !coverImage) {
     throw new Error("O texto e a imagem da matéria não foram localizados.");
   }
@@ -548,10 +613,16 @@ async function fetchOfficialNewsDetails(sourceUrl: string) {
 }
 
 async function fetchOfficialNews() {
-  const response = await fetchWithRetry(CAMARA_RSS_URL, {
+  const [response, publications] = await Promise.all([
+    fetchWithRetry(CAMARA_RSS_URL, {
     headers: { Accept: "application/rss+xml, application/xml, text/xml" },
     cache: "no-store",
-  }, "RSS da Câmara");
+    }, "RSS da Câmara"),
+    fetchOfficialPublications().catch((error) => {
+      console.warn("Não foi possível consultar as imagens na API oficial:", error);
+      return [] as OfficialPublication[];
+    }),
+  ]);
   if (!response.ok) throw new Error(`RSS da Câmara respondeu HTTP ${response.status}.`);
   const xml = await response.text();
   const parsed = new XMLParser({ ignoreAttributes: false }).parse(xml) as { rss?: { channel?: { item?: unknown | unknown[] } } };
@@ -575,7 +646,9 @@ async function fetchOfficialNews() {
   });
   return mapWithConcurrency(summaries, 3, async (item) => {
     try {
-      return { ...item, ...await fetchOfficialNewsDetails(item.sourceUrl) };
+      const canonicalUrl = item.sourceUrl.replace(/#.*$/, "");
+      const publication = publications.find((entry) => String(entry.link || "").replace(/#.*$/, "") === canonicalUrl);
+      return { ...item, ...await fetchOfficialNewsDetails(item.sourceUrl, publication?.imagem) };
     } catch (error) {
       console.warn(`Não foi possível enriquecer a matéria ${item.sourceUrl}:`, error);
       return item;
