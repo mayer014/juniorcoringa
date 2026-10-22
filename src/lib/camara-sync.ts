@@ -482,6 +482,10 @@ function extractOfficialNarration(html: string) {
     .trim();
 }
 
+function isBotVerification(html: string) {
+  return /<title>\s*Bot Verification\s*<\/title>|lsrecaptcha-form|grecaptcha\.render/i.test(html);
+}
+
 function markdownExcerpt(markdown: string) {
   const text = markdown
     .replace(/!\[[^\]]*]\([^)]*\)/g, "")
@@ -557,8 +561,10 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: strin
       }, `Documento da matéria ${publicationId}`);
       if (documentResponse.ok) {
         const documentHtml = await documentResponse.text();
-        const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
-        article = turndown.turndown(documentHtml).replace(/\n{3,}/g, "\n\n").trim();
+        if (!isBotVerification(documentHtml)) {
+          const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+          article = turndown.turndown(documentHtml).replace(/\n{3,}/g, "\n\n").trim();
+        }
       }
     } catch (error) {
       console.warn(`Não foi possível obter o documento oficial ${publicationId}:`, error);
@@ -589,6 +595,7 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: strin
   }, `Matéria ${sourceUrl}`);
   if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
   const html = await response.text();
+  if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
   imageUrl ||= metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
   let coverImage: string | null = null;
   if (imageUrl) {
