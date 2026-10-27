@@ -22,6 +22,7 @@ const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
 const CAMARA_RSS_URL = "https://www.camara.ms.gov.br/jsonweb/web-rss.php";
 const CAMARA_API_URL = process.env.CAMARA_API_URL || "https://www.camara.ms.gov.br/jsonweb/web-aplicativo.php";
 const CAMARA_API_TOKEN = process.env.CAMARA_API_TOKEN || "";
+const CAMARA_NEWS_READER_URL = process.env.CAMARA_NEWS_READER_URL || "https://r.jina.ai/";
 const VEREADOR_NAME = "Junior Coringa";
 const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
@@ -505,7 +506,7 @@ function extractOfficialNarration(html: string) {
 }
 
 function isBotVerification(html: string) {
-  return /<title>\s*Bot Verification\s*<\/title>|lsrecaptcha-form|grecaptcha\.render/i.test(html);
+  return /<title>\s*Bot Verification\s*<\/title>|^Title:\s*Bot Verification\s*$|lsrecaptcha-form|grecaptcha\.render/im.test(html);
 }
 
 function markdownExcerpt(markdown: string) {
@@ -587,6 +588,54 @@ function extractOfficialNewsPdfText(pdfText: string) {
   return paragraphs.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function canonicalOfficialNewsUrl(sourceUrl: string, publishedAt: string) {
+  const url = new URL(sourceUrl);
+  const publicationId = url.pathname.match(/\/(\d+)\/?$/)?.[1];
+  const parsedYear = new Date(publishedAt).getFullYear();
+  if (!publicationId || !Number.isFinite(parsedYear)) return sourceUrl;
+  return new URL(`/imprensa/noticias/Noticias/1/${parsedYear}/${publicationId}`, url).toString();
+}
+
+function extractOfficialNewsHtml(html: string) {
+  const imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
+  const bodyHtml = extractOfficialArticleBody(html);
+  const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+  const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
+  return {
+    article: converted.length >= 80 ? converted : extractOfficialNarration(html),
+    imageUrl,
+  };
+}
+
+function extractReaderNews(markdown: string) {
+  if (isBotVerification(markdown)) throw new Error("O leitor público também recebeu Bot Verification.");
+  const content = markdown.split(/\nMarkdown Content:\s*\n/i).at(-1) || "";
+  const imageUrl = content.match(/!\[[^\]]*]\((https?:\/\/[^)\s]+\/news\/[^)\s]+)\)/i)?.[1] || "";
+  const lines = content.replace(/\r/g, "").split("\n");
+  const start = lines.findIndex((line) => {
+    const trimmed = line.trim();
+    return Boolean(trimmed) && !trimmed.startsWith("[") && !/^imprimir\s+(?:PDF|DOC)/i.test(trimmed);
+  });
+  const bodyLines = start >= 0 ? lines.slice(start) : [];
+  const end = bodyLines.findIndex((line) => /^\*{0,2}Protocolos desta Publica(?:ç|c)ão:/i.test(line.trim()));
+  const article = (end >= 0 ? bodyLines.slice(0, end) : bodyLines).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (article.length < 80) throw new Error("O leitor público não retornou o corpo completo da matéria.");
+  return { article, imageUrl };
+}
+
+async function fetchOfficialNewsReader(canonicalUrl: string) {
+  const baseUrl = CAMARA_NEWS_READER_URL.endsWith("/") ? CAMARA_NEWS_READER_URL : `${CAMARA_NEWS_READER_URL}/`;
+  const response = await fetchWithRetry(`${baseUrl}${canonicalUrl}`, {
+    headers: {
+      Accept: "text/plain,text/markdown;q=0.9,*/*;q=0.1",
+      "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
+    },
+    cache: "no-store",
+  }, "Leitor alternativo da matéria");
+  if (!response.ok) throw new Error(`Leitor alternativo respondeu HTTP ${response.status}.`);
+  return extractReaderNews(await response.text());
+}
+
 async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
   const pdfUrl = new URL("/legislarr/noticia_print_pdf.php", sourceUrl);
   pdfUrl.searchParams.set("item", publicationId);
@@ -611,8 +660,9 @@ async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
   return article;
 }
 
-async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: string) {
+async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string | undefined, publishedAt: string) {
   const publicationId = new URL(sourceUrl).pathname.match(/\/(\d+)\/?$/)?.[1];
+  const canonicalUrl = canonicalOfficialNewsUrl(sourceUrl, publishedAt);
   let article = "";
   if (publicationId) {
     try {
@@ -653,26 +703,39 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: strin
   }
 
   if (article.length < 80 || !imageUrl) {
-    const response = await fetchWithRetry(sourceUrl, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
-      },
-      cache: "no-store",
-    }, `Matéria ${sourceUrl}`);
-    if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
-    const html = await response.text();
-    if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
-
-    if (!imageUrl) {
-      imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
-      if (imageUrl) coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
+    for (const candidateUrl of [...new Set([canonicalUrl, sourceUrl])]) {
+      try {
+        const response = await fetchWithRetry(candidateUrl, {
+          headers: {
+            Accept: "text/html,application/xhtml+xml",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+          },
+          cache: "no-store",
+        }, `Matéria ${candidateUrl}`);
+        if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
+        const html = await response.text();
+        if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
+        const extracted = extractOfficialNewsHtml(html);
+        article ||= extracted.article;
+        imageUrl ||= extracted.imageUrl;
+        if (imageUrl && !coverImage) coverImage = await downloadOfficialCover(new URL(imageUrl, candidateUrl).toString());
+        if (article.length >= 80 && imageUrl) break;
+      } catch (error) {
+        console.warn(`Não foi possível ler a matéria pela rota ${candidateUrl}:`, error);
+      }
     }
+  }
 
-    const bodyHtml = extractOfficialArticleBody(html);
-    const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
-    const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
-    article ||= converted.length >= 80 ? converted : extractOfficialNarration(html);
+  if (article.length < 80 || !imageUrl) {
+    try {
+      const reader = await fetchOfficialNewsReader(canonicalUrl);
+      article ||= reader.article;
+      imageUrl ||= reader.imageUrl;
+      if (imageUrl && !coverImage) coverImage = await downloadOfficialCover(new URL(imageUrl, canonicalUrl).toString());
+    } catch (error) {
+      console.warn(`Não foi possível ler a matéria pelo leitor alternativo ${canonicalUrl}:`, error);
+    }
   }
 
   if (article.length < 80) throw new Error("O texto completo da matéria ainda não está disponível.");
@@ -684,12 +747,12 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: strin
   };
 }
 
-async function fetchOfficialNewsDetailsWithRetry(sourceUrl: string, officialImage?: string) {
+async function fetchOfficialNewsDetailsWithRetry(sourceUrl: string, officialImage: string | undefined, publishedAt: string) {
   let lastError: unknown;
   for (const [index, delayMs] of NEWS_DETAILS_RETRY_DELAYS_MS.entries()) {
     if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     try {
-      return await fetchOfficialNewsDetails(sourceUrl, officialImage);
+      return await fetchOfficialNewsDetails(sourceUrl, officialImage, publishedAt);
     } catch (error) {
       lastError = error;
       if (index < NEWS_DETAILS_RETRY_DELAYS_MS.length - 1) {
@@ -737,7 +800,7 @@ async function fetchOfficialNews(): Promise<OfficialNewsBatch> {
     try {
       const canonicalUrl = item.sourceUrl.replace(/#.*$/, "");
       const publication = publications.find((entry) => String(entry.link || "").replace(/#.*$/, "") === canonicalUrl);
-      return { ...item, ...await fetchOfficialNewsDetailsWithRetry(item.sourceUrl, publication?.imagem) };
+      return { ...item, ...await fetchOfficialNewsDetailsWithRetry(item.sourceUrl, publication?.imagem, publication?.data || item.publishedAt) };
     } catch (error) {
       console.warn(`A matéria ${item.sourceUrl} ficou pendente para não ser publicada sem texto ou imagem:`, error);
       return null;

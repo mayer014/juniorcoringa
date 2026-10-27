@@ -46,6 +46,7 @@ Essa senha de desenvolvimento não funciona em produção.
 | `DATA_DIR` | diretório persistente do banco e dos uploads |
 | `CAMARA_SYNC_SECRET` | segredo do endpoint interno de sincronização |
 | `CAMARA_PDF_DETAILS_LIMIT` | quantidade máxima de PDFs novos detalhados por execução |
+| `CAMARA_NEWS_READER_URL` | leitor alternativo usado somente quando a Câmara bloqueia o corpo de uma matéria |
 | `TZ` | fuso da aplicação; use `America/Cuiaba` |
 
 Quando `ADMIN_PASSWORD_HASH` estiver definido, ele tem prioridade sobre `ADMIN_PASSWORD`.
