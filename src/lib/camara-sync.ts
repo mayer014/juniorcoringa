@@ -25,6 +25,7 @@ const CAMARA_API_TOKEN = process.env.CAMARA_API_TOKEN || "";
 const VEREADOR_NAME = "Junior Coringa";
 const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
+const NEWS_DETAILS_RETRY_DELAYS_MS = [0, 1_500, 4_000] as const;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
 const DATA_DIR = path.resolve(
   /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
@@ -53,6 +54,21 @@ type OfficialPublication = {
   link?: string;
 };
 
+type OfficialNewsItem = {
+  sourceId: string;
+  sourceUrl: string;
+  title: string;
+  excerpt: string;
+  content: string;
+  coverImage: string | null;
+  publishedAt: string;
+};
+
+type OfficialNewsBatch = {
+  items: OfficialNewsItem[];
+  pending: number;
+};
+
 export type CamaraSyncResult = {
   mode: CamaraSyncMode;
   found: number;
@@ -61,6 +77,7 @@ export type CamaraSyncResult = {
   unchanged: number;
   newsInserted: number;
   newsUpdated: number;
+  newsPending: number;
   projects: number;
   indications: number;
   pdfDetails: number;
@@ -571,55 +588,62 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: strin
     }
   }
 
+  let coverImage: string | null = null;
   let imageUrl = officialImage || "";
-  if (article.length >= 80 && imageUrl) {
-    let coverImage: string | null = null;
-    try {
-      coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
-    } catch (error) {
-      console.warn(`Não foi possível salvar a capa de ${sourceUrl}:`, error);
-    }
-    return {
-      excerpt: markdownExcerpt(article),
-      content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
-      coverImage,
-    };
+  if (imageUrl) {
+    coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
   }
 
-  const response = await fetchWithRetry(sourceUrl, {
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
-    },
-    cache: "no-store",
-  }, `Matéria ${sourceUrl}`);
-  if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
-  const html = await response.text();
-  if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
-  imageUrl ||= metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
-  let coverImage: string | null = null;
-  if (imageUrl) {
-    try {
-      coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
-    } catch (error) {
-      console.warn(`Não foi possível salvar a capa de ${sourceUrl}:`, error);
+  if (article.length < 80 || !imageUrl) {
+    const response = await fetchWithRetry(sourceUrl, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
+      },
+      cache: "no-store",
+    }, `Matéria ${sourceUrl}`);
+    if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
+    const html = await response.text();
+    if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
+
+    if (!imageUrl) {
+      imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
+      if (imageUrl) coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
     }
+
+    const bodyHtml = extractOfficialArticleBody(html);
+    const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
+    const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
+    article ||= converted.length >= 80 ? converted : extractOfficialNarration(html);
   }
-  const bodyHtml = extractOfficialArticleBody(html);
-  const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
-  const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";
-  article ||= converted.length >= 80 ? converted : extractOfficialNarration(html);
-  if (article.length < 80 && !coverImage) {
-    throw new Error("O texto e a imagem da matéria não foram localizados.");
-  }
+
+  if (article.length < 80) throw new Error("O texto completo da matéria ainda não está disponível.");
+  if (imageUrl && !coverImage) throw new Error("A imagem da matéria ainda não pôde ser salva.");
   return {
-    excerpt: article ? markdownExcerpt(article) : null,
-    content: article ? `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})` : null,
+    excerpt: markdownExcerpt(article),
+    content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
     coverImage,
   };
 }
 
-async function fetchOfficialNews() {
+async function fetchOfficialNewsDetailsWithRetry(sourceUrl: string, officialImage?: string) {
+  let lastError: unknown;
+  for (const [index, delayMs] of NEWS_DETAILS_RETRY_DELAYS_MS.entries()) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      return await fetchOfficialNewsDetails(sourceUrl, officialImage);
+    } catch (error) {
+      lastError = error;
+      if (index < NEWS_DETAILS_RETRY_DELAYS_MS.length - 1) {
+        const reason = error instanceof Error ? error.message : "erro desconhecido";
+        console.warn(`Detalhes de ${sourceUrl} incompletos; nova tentativa será feita: ${reason}`);
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function fetchOfficialNews(): Promise<OfficialNewsBatch> {
   const [response, publications] = await Promise.all([
     fetchWithRetry(CAMARA_RSS_URL, {
     headers: { Accept: "application/rss+xml, application/xml, text/xml" },
@@ -651,16 +675,18 @@ async function fetchOfficialNews() {
       publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
     }];
   });
-  return mapWithConcurrency(summaries, 3, async (item) => {
+  const enriched = await mapWithConcurrency(summaries, 3, async (item): Promise<OfficialNewsItem | null> => {
     try {
       const canonicalUrl = item.sourceUrl.replace(/#.*$/, "");
       const publication = publications.find((entry) => String(entry.link || "").replace(/#.*$/, "") === canonicalUrl);
-      return { ...item, ...await fetchOfficialNewsDetails(item.sourceUrl, publication?.imagem) };
+      return { ...item, ...await fetchOfficialNewsDetailsWithRetry(item.sourceUrl, publication?.imagem) };
     } catch (error) {
-      console.warn(`Não foi possível enriquecer a matéria ${item.sourceUrl}:`, error);
-      return item;
+      console.warn(`A matéria ${item.sourceUrl} ficou pendente para não ser publicada sem texto ou imagem:`, error);
+      return null;
     }
   });
+  const completeItems = enriched.filter((item): item is OfficialNewsItem => Boolean(item));
+  return { items: completeItems, pending: enriched.length - completeItems.length };
 }
 
 export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual"): Promise<CamaraSyncResult> {
@@ -668,10 +694,11 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
   const runId = startCamaraSyncRun(mode, trigger);
   try {
     const currentYear = new Date().getFullYear();
+    const emptyNews: OfficialNewsBatch = { items: [], pending: 0 };
     const [projectRows, indicationRows, news] = mode === "history"
-      ? [await fetchLegislativeRows("Ato", "projeto"), [], []]
+      ? [await fetchLegislativeRows("Ato", "projeto"), [], emptyNews]
       : mode === "indications"
-        ? [[], await fetchLegislativeRows("Documento", "documento"), []]
+        ? [[], await fetchLegislativeRows("Documento", "documento"), emptyNews]
         : await Promise.all([
             fetchLegislativeRows("Ato", "projeto", currentYear),
             fetchLegislativeRows("Documento", "documento", currentYear),
@@ -696,7 +723,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     const counts = { inserted: 0, updated: 0, unchanged: 0 };
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
     const newsCounts = { inserted: 0, updated: 0, unchanged: 0 };
-    for (const item of news) newsCounts[createOfficialNewsPost(item)] += 1;
+    for (const item of news.items) newsCounts[createOfficialNewsPost(item)] += 1;
     const retitled = retitleStoredIndications();
     const result: CamaraSyncResult = {
       mode,
@@ -706,6 +733,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       unchanged: counts.unchanged,
       newsInserted: newsCounts.inserted,
       newsUpdated: newsCounts.updated,
+      newsPending: news.pending,
       projects: projects.length,
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,
