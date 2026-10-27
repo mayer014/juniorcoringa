@@ -65,6 +65,7 @@ type LegislativeRow = {
 type SyncRunRow = {
   id: number;
   started_at: string;
+  heartbeat_at: string | null;
   finished_at: string | null;
   status: "running" | "success" | "error";
   found: number;
@@ -161,6 +162,7 @@ function openDatabase() {
     CREATE TABLE IF NOT EXISTS camara_sync_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       started_at TEXT NOT NULL,
+      heartbeat_at TEXT,
       finished_at TEXT,
       status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error')),
       found INTEGER NOT NULL DEFAULT 0,
@@ -252,6 +254,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS camara_sync_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
+    heartbeat_at TEXT,
     finished_at TEXT,
     status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error')),
     found INTEGER NOT NULL DEFAULT 0,
@@ -289,6 +292,7 @@ for (const [name, type] of legislativeMigrations) {
 
 const syncRunColumns = db.prepare("PRAGMA table_info(camara_sync_runs)").all() as Array<{ name: string }>;
 const syncRunMigrations = [
+  ["heartbeat_at", "TEXT"],
   ["unchanged", "INTEGER NOT NULL DEFAULT 0"],
   ["news_updated", "INTEGER NOT NULL DEFAULT 0"],
   ["mode", "TEXT NOT NULL DEFAULT 'daily'"],
@@ -895,10 +899,30 @@ export function createOfficialNewsPost(input: {
 }
 
 export function startCamaraSyncRun(mode: "daily" | "history" | "indications", triggerSource: "manual" | "scheduled") {
-  const result = db.prepare(
-    "INSERT INTO camara_sync_runs (started_at, status, mode, trigger_source) VALUES (?, 'running', ?, ?)",
-  ).run(new Date().toISOString(), mode, triggerSource);
-  return Number(result.lastInsertRowid);
+  const acquire = db.transaction(() => {
+    const now = new Date().toISOString();
+    const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    db.prepare(`
+      UPDATE camara_sync_runs
+      SET finished_at = ?, status = 'error', error = ?
+      WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)
+    `).run(now, "Sincronização anterior interrompida; o bloqueio foi recuperado automaticamente.", staleCutoff);
+
+    const running = db.prepare("SELECT 1 FROM camara_sync_runs WHERE status = 'running' LIMIT 1").get();
+    if (running) return null;
+
+    const result = db.prepare(`
+      INSERT INTO camara_sync_runs (started_at, heartbeat_at, status, mode, trigger_source)
+      VALUES (?, ?, 'running', ?, ?)
+    `).run(now, now, mode, triggerSource);
+    return Number(result.lastInsertRowid);
+  });
+  return acquire.immediate();
+}
+
+export function heartbeatCamaraSyncRun(id: number) {
+  db.prepare("UPDATE camara_sync_runs SET heartbeat_at = ? WHERE id = ? AND status = 'running'")
+    .run(new Date().toISOString(), id);
 }
 
 export function finishCamaraSyncRun(id: number, result: {
@@ -925,13 +949,6 @@ export function getLatestCamaraSyncRun() {
   return mapSyncRun(
     db.prepare("SELECT * FROM camara_sync_runs ORDER BY id DESC LIMIT 1").get() as SyncRunRow | undefined,
   );
-}
-
-export function isCamaraSyncRunning() {
-  const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-  return Boolean(db.prepare(
-    "SELECT 1 FROM camara_sync_runs WHERE status = 'running' AND started_at >= ? LIMIT 1",
-  ).get(cutoff));
 }
 
 export function reorderGalleryItems(ids: number[]) {

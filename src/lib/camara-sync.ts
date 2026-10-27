@@ -10,7 +10,7 @@ import {
   createOfficialNewsPost,
   finishCamaraSyncRun,
   getLegislativeItemByExternalId,
-  isCamaraSyncRunning,
+  heartbeatCamaraSyncRun,
   listLegislativeItems,
   startCamaraSyncRun,
   updateLegislativeItemTitle,
@@ -748,8 +748,16 @@ async function fetchOfficialNews(): Promise<OfficialNewsBatch> {
 }
 
 export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual"): Promise<CamaraSyncResult> {
-  if (isCamaraSyncRunning()) throw new Error("Já existe uma sincronização da Câmara em andamento.");
   const runId = startCamaraSyncRun(mode, trigger);
+  if (runId === null) throw new Error("Já existe uma sincronização da Câmara em andamento.");
+  const heartbeat = setInterval(() => {
+    try {
+      heartbeatCamaraSyncRun(runId);
+    } catch (error) {
+      console.warn(`Não foi possível renovar o bloqueio da sincronização ${runId}:`, error);
+    }
+  }, 15_000);
+  heartbeat.unref();
   try {
     const currentYear = new Date().getFullYear();
     const emptyNews: OfficialNewsBatch = { items: [], pending: 0 };
@@ -803,5 +811,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     const message = error instanceof Error ? error.message : "Erro desconhecido na sincronização.";
     finishCamaraSyncRun(runId, { status: "error", error: message.slice(0, 1000) });
     throw error;
+  } finally {
+    clearInterval(heartbeat);
   }
 }
