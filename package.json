@@ -13,6 +13,7 @@
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource-variable/manrope": "^5.3.0",
+    "@napi-rs/canvas": "0.1.80",
     "@types/he": "^1.2.3",
     "@types/turndown": "^5.0.6",
     "bcryptjs": "latest",

@@ -386,12 +386,17 @@ async function fetchPdfText(sourceUrl: string) {
   }, `PDF ${sourceUrl}`);
   if (!response.ok) throw new Error(`PDF respondeu HTTP ${response.status}.`);
   if (!response.headers.get("content-type")?.toLowerCase().includes("application/pdf")) throw new Error("Documento oficial não retornou um PDF.");
+  return parsePdfText(new Uint8Array(await response.arrayBuffer()));
+}
+
+async function parsePdfText(data: Uint8Array, parameters?: { lineThreshold?: number; pageJoiner?: string }) {
   // Carregamento tardio: uma incompatibilidade opcional do leitor de PDF nunca pode
   // impedir a importação da listagem oficial e deixar toda a página vazia.
+  await import("@napi-rs/canvas");
   const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: new Uint8Array(await response.arrayBuffer()) });
+  const parser = new PDFParse({ data });
   try {
-    const result = await parser.getText();
+    const result = await parser.getText(parameters);
     return result.text;
   } finally {
     await parser.destroy();
@@ -561,10 +566,63 @@ async function fetchOfficialPublications() {
   return Array.isArray(payload) ? payload as OfficialPublication[] : [];
 }
 
+function extractOfficialNewsPdfText(pdfText: string) {
+  const lines = pdfText.replace(/\r/g, "").split("\n");
+  const sourceIndex = lines.findIndex((line) => /https?:\/\/\S+\/imprensa\//i.test(line));
+  const contentLines = sourceIndex >= 0 ? lines.slice(sourceIndex + 1) : lines;
+  const paragraphs: string[] = [];
+  const repeatedHeader = /^(?:ESTADO DE MATO GROSSO DO SUL|CÂMARA MUNICIPAL DE CAMPO GRANDE|Avenida Ricardo Brandão, 1600|Fone: \(67\) 3316-1500|Página \d+\s+www\.camara\.ms\.gov\.br|-- \d+ of \d+ --)/i;
+
+  for (const rawLine of contentLines) {
+    const continuation = /^[\t ]/.test(rawLine);
+    const line = rawLine.trim();
+    if (!line || repeatedHeader.test(line)) continue;
+    if (continuation && paragraphs.length) {
+      paragraphs[paragraphs.length - 1] += `${paragraphs[paragraphs.length - 1].endsWith("-") ? "" : " "}${line}`;
+    } else {
+      paragraphs.push(line);
+    }
+  }
+
+  return paragraphs.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
+  const pdfUrl = new URL("/legislarr/noticia_print_pdf.php", sourceUrl);
+  pdfUrl.searchParams.set("item", publicationId);
+  pdfUrl.searchParams.set("assinatura", "0");
+  const response = await fetchWithRetry(pdfUrl, {
+    headers: {
+      Accept: "application/pdf,*/*",
+      "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
+    },
+    cache: "no-store",
+  }, `PDF da matéria ${publicationId}`);
+  if (!response.ok) throw new Error(`PDF da matéria respondeu HTTP ${response.status}.`);
+  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+  if (!contentType.includes("application/pdf")) {
+    const unexpectedContent = await response.text();
+    if (isBotVerification(unexpectedContent)) throw new Error("A Câmara bloqueou também o PDF da matéria com Bot Verification.");
+    throw new Error(`PDF da matéria retornou ${contentType || "um formato desconhecido"}.`);
+  }
+  const pdfText = await parsePdfText(new Uint8Array(await response.arrayBuffer()), { lineThreshold: 14, pageJoiner: "\n" });
+  const article = extractOfficialNewsPdfText(pdfText);
+  if (article.length < 80) throw new Error("O PDF oficial não contém o texto completo da matéria.");
+  return article;
+}
+
 async function fetchOfficialNewsDetails(sourceUrl: string, officialImage?: string) {
   const publicationId = new URL(sourceUrl).pathname.match(/\/(\d+)\/?$/)?.[1];
   let article = "";
   if (publicationId) {
+    try {
+      article = await fetchOfficialNewsPdf(sourceUrl, publicationId);
+    } catch (error) {
+      console.warn(`Não foi possível obter o PDF oficial ${publicationId}:`, error);
+    }
+  }
+
+  if (publicationId && article.length < 80) {
     try {
       const documentUrl = new URL("/legislarr/documento_print_doc.php", sourceUrl);
       documentUrl.searchParams.set("documento_tipo", "noticia");

@@ -2,7 +2,14 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  serverExternalPackages: ["better-sqlite3", "pdf-parse"],
+  serverExternalPackages: ["@napi-rs/canvas", "better-sqlite3", "pdf-parse"],
+  outputFileTracingIncludes: {
+    "/api/**": [
+      "node_modules/@napi-rs/canvas/**/*",
+      "node_modules/@napi-rs/canvas-*/**/*",
+      "node_modules/pdfjs-dist/**/*",
+    ],
+  },
   images: {
     formats: ["image/avif", "image/webp"],
   },

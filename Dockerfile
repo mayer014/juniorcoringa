@@ -32,6 +32,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/seed ./seed
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/bootstrap-data.mjs ./scripts/bootstrap-data.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# O leitor de PDF carrega o Canvas por nome em tempo de execução; o rastreador
+# standalone do Next não inclui automaticamente esse módulo nativo opcional.
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules/@napi-rs ./node_modules/@napi-rs
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules/pdfjs-dist ./node_modules/pdfjs-dist
 
 USER nextjs
 EXPOSE 3000
