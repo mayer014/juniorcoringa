@@ -1,15 +1,15 @@
-import { Activity, CheckCircle2, Clock3, FileCheck2, Landmark, Newspaper, Search } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock3, FileCheck2, Landmark, Newspaper, Search } from "lucide-react";
 import Link from "next/link";
 import { CamaraSyncButton } from "@/components/admin/camara-sync-button";
 import { LegislativeManager } from "@/components/admin/legislative-manager";
-import { countAdminLegislativeItems, getDatabaseStorageStatus, getLatestCamaraSyncRun, getLegislativeCounts, listAdminLegislativeItems } from "@/lib/db";
+import { countAdminLegislativeItems, getDatabaseStorageStatus, getLatestCamaraSyncRun, getLegislativeCounts, getLegislativeQualityCounts, listAdminLegislativeItems } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import type { LegislativeKind } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 50;
-type SearchParams = { tipo?: string; exibicao?: string; q?: string; pagina?: string };
+type SearchParams = { tipo?: string; exibicao?: string; qualidade?: string; q?: string; pagina?: string };
 type PageProps = { searchParams: Promise<SearchParams> };
 
 function pageHref(filters: SearchParams, page: number) {
@@ -23,19 +23,23 @@ function pageHref(filters: SearchParams, page: number) {
 export default async function IntegrationPage({ searchParams }: PageProps) {
   const filters = await searchParams;
   const counts = getLegislativeCounts();
+  const qualityCounts = getLegislativeQualityCounts();
   const latest = getLatestCamaraSyncRun();
   const storage = getDatabaseStorageStatus();
   const kind = filters.tipo === "projetos" ? "project" : filters.tipo === "indicacoes" ? "indication" : undefined;
   const visibility = filters.exibicao === "visiveis" ? "published" : filters.exibicao === "ocultos" ? "hidden" : undefined;
+  const quality = ["pending", "failed", "manual_review", "complete"].includes(filters.qualidade ?? "")
+    ? filters.qualidade as "pending" | "failed" | "manual_review" | "complete"
+    : undefined;
   const query = filters.q?.trim() || undefined;
   const requestedPage = Number.parseInt(filters.pagina ?? "1", 10);
   const page = Number.isFinite(requestedPage) ? Math.max(requestedPage, 1) : 1;
-  const listOptions = { kind: kind as LegislativeKind | undefined, visibility: visibility as "published" | "hidden" | undefined, query };
+  const listOptions = { kind: kind as LegislativeKind | undefined, visibility: visibility as "published" | "hidden" | undefined, quality, query };
   const totalManaged = countAdminLegislativeItems(listOptions);
   const pageCount = Math.max(Math.ceil(totalManaged / PAGE_SIZE), 1);
   const safePage = Math.min(page, pageCount);
   const items = listAdminLegislativeItems({ ...listOptions, limit: PAGE_SIZE, offset: (safePage - 1) * PAGE_SIZE });
-  const hasFilters = Boolean(filters.tipo || filters.exibicao || query);
+  const hasFilters = Boolean(filters.tipo || filters.exibicao || filters.qualidade || query);
 
   return (
     <div className="admin-content">
@@ -56,6 +60,8 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
         <article><span><Clock3 size={20} /></span><div><strong>{counts.processing}</strong><small>Em tramitação</small></div></article>
         <article><span><CheckCircle2 size={20} /></span><div><strong>{counts.approved}</strong><small>Aprovados</small></div></article>
       </div>
+
+      {(qualityCounts.pending > 0 || qualityCounts.failed > 0 || qualityCounts.manualReview > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há indicações aguardando enriquecimento.</strong><span>{qualityCounts.pending} pendentes, {qualityCounts.failed} com falha e {qualityCounts.manualReview} para revisão manual. Os registros incompletos ficam ocultos até a correção.</span></div></div>}
 
       <section className="admin-list-card camara-status-card">
         <div className="admin-list-card__heading"><h2>Última sincronização</h2><Activity size={20} /></div>
@@ -84,6 +90,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
           <label className="legislative-admin-search"><Search size={16} /><input name="q" defaultValue={filters.q ?? ""} placeholder="Buscar título, número, bairro ou lei" /></label>
           <select name="tipo" defaultValue={filters.tipo ?? ""} aria-label="Filtrar por tipo"><option value="">Todos os tipos</option><option value="indicacoes">Indicações</option><option value="projetos">Projetos e leis</option></select>
           <select name="exibicao" defaultValue={filters.exibicao ?? ""} aria-label="Filtrar por exibição"><option value="">Visíveis e ocultos</option><option value="visiveis">Somente visíveis</option><option value="ocultos">Somente ocultos</option></select>
+          <select name="qualidade" defaultValue={filters.qualidade ?? ""} aria-label="Filtrar por qualidade"><option value="">Todos os estados</option><option value="pending">Aguardando PDF</option><option value="failed">Falha no PDF</option><option value="manual_review">Revisão manual</option><option value="complete">Dados completos</option></select>
           <button className="admin-button admin-button--primary" type="submit">Filtrar</button>
           {hasFilters && <Link className="legislative-admin-clear" href="/admin/integracao">Limpar</Link>}
         </form>

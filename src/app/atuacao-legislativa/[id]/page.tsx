@@ -13,13 +13,16 @@ type PageProps = { params: Promise<{ id: string }> };
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
   const item = getLegislativeItem(Number(id));
-  return item ? { title: item.title, description: item.summary } : { title: "Registro não encontrado" };
+  return item ? { title: item.title, description: item.publicSummary } : { title: "Registro não encontrado" };
 }
 
 export default async function LegislativeDetailPage({ params }: PageProps) {
   const { id } = await params;
   const item = getLegislativeItem(Number(id));
   if (!item) notFound();
+  const mapQuery = item.location
+    ? encodeURIComponent(`${item.location}${item.neighborhood ? `, ${item.neighborhood}` : ""}, Campo Grande, MS`)
+    : null;
   return (
     <>
       <SiteHeader />
@@ -30,16 +33,18 @@ export default async function LegislativeDetailPage({ params }: PageProps) {
           <span className="legislative-detail__type">{item.type}</span>
           <h1>{item.title}</h1>
           {item.neighborhood && <span className="legislative-detail__neighborhood"><MapPin size={17} /> {item.neighborhood}</span>}
-          <p className="legislative-detail__summary">{item.summary}</p>
+          <p className="legislative-detail__summary">{item.publicSummary}</p>
           <div className="legislative-detail__meta">
             <span><CalendarDays /> <small>Protocolado em</small><strong>{formatDate(item.occurredAt)}</strong></span>
             <span><UserRound /> <small>{item.authorRole ?? "Autoria"}</small><strong>{item.author}</strong></span>
             <span><Landmark /> <small>Situação atual</small><strong>{item.status}</strong></span>
           </div>
-          {(item.service || item.location) && (
+          {(item.service || item.location || item.neighborhood || item.reference) && (
             <section className="legislative-detail__request" aria-label="Detalhes da solicitação">
               {item.service && <div><Wrench /><span><small>O que foi solicitado</small><strong>{item.service}</strong></span></div>}
-              {item.location && <div><MapPin /><span><small>Onde</small><strong>{item.location}</strong></span></div>}
+              {item.location && <div><MapPin /><span><small>Endereço</small><strong>{item.location}</strong>{mapQuery && <a href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`} target="_blank" rel="noopener noreferrer">Ver localização no mapa <ArrowUpRight size={14} /></a>}</span></div>}
+              {item.neighborhood && <div><Landmark /><span><small>Bairro</small><strong>{item.neighborhood}</strong></span></div>}
+              {item.reference && <div><MapPin /><span><small>Ponto de referência</small><strong>{item.reference}</strong></span></div>}
             </section>
           )}
           {item.lawNumber && (

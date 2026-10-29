@@ -16,6 +16,13 @@ import {
   updateLegislativeItemTitle,
   upsertLegislativeItem,
 } from "@/lib/db";
+import {
+  buildIndicationDetails,
+  concise,
+  normalizeForComparison,
+  normalizeLegislativeText,
+  sentenceCase,
+} from "@/lib/legislative-content";
 import type { LegislativeItemInput, LegislativeStatusGroup } from "@/lib/types";
 
 const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
@@ -28,6 +35,7 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 100;
 const NEWS_DETAILS_RETRY_DELAYS_MS = [0, 1_500, 4_000] as const;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
+const PDF_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_BACKFILL_LIMIT ?? "250", 10);
 const DATA_DIR = path.resolve(
   /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
 );
@@ -37,14 +45,6 @@ type DataTableResponse = {
   recordsTotal?: number | string;
   recordsFiltered?: number | string;
   error?: string;
-};
-
-type IndicationDetails = {
-  location: string | null;
-  neighborhood: string | null;
-  service: string;
-  fullText: string | null;
-  title: string;
 };
 
 type OfficialPublication = {
@@ -83,21 +83,17 @@ export type CamaraSyncResult = {
   indications: number;
   pdfDetails: number;
   retitled: number;
+  enriched: number;
+  pending: number;
+  failed: number;
+  manualReview: number;
 };
 
 export type CamaraSyncMode = "daily" | "history" | "indications";
 export type CamaraSyncTrigger = "manual" | "scheduled";
 
 function normalizeText(value: unknown) {
-  return he.decode(String(value ?? ""))
-    .replace(/<br\s*\/?\s*>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/[_\s]+/g, " ")
-    .trim();
-}
-
-function normalizeForComparison(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return normalizeLegislativeText(value);
 }
 
 function containsJunior(value: unknown) {
@@ -124,23 +120,6 @@ function getDefinitionValue(html: unknown, label: string) {
   return normalizeText(match?.[1]);
 }
 
-function sentenceCase(value: string) {
-  const clean = normalizeText(value).replace(/\s+([,.;:])/g, "$1");
-  if (!clean) return clean;
-  const letters = clean.replace(/[^A-Za-zÀ-ÿ]/g, "");
-  const uppercase = letters.replace(/[^A-ZÀ-Þ]/g, "");
-  if (letters.length && uppercase.length / letters.length > 0.75) {
-    return clean.toLocaleLowerCase("pt-BR").replace(/(^|[.!?]\s+)(\p{L})/gu, (_, prefix, letter) => `${prefix}${letter.toLocaleUpperCase("pt-BR")}`);
-  }
-  return clean.charAt(0).toLocaleUpperCase("pt-BR") + clean.slice(1);
-}
-
-function concise(value: string, maximum = 150) {
-  if (value.length <= maximum) return value;
-  const shortened = value.slice(0, maximum + 1).replace(/\s+\S*$/, "").trim();
-  return `${shortened}…`;
-}
-
 function projectTitle(summary: string) {
   const title = sentenceCase(summary)
     .replace(/^["“”']+|["“”']+$/g, "")
@@ -151,35 +130,6 @@ function projectTitle(summary: string) {
     .replace(/[.]$/, "")
     .trim();
   return concise(sentenceCase(title), 105);
-}
-
-function indicationServiceTitle(service: string) {
-  const normalized = normalizeForComparison(service);
-  const rules: Array<[RegExp, string]> = [
-    [/tapa.?buraco/, "Operação tapa-buracos"],
-    [/patrolamento.*cascalhamento|cascalhamento.*patrolamento/, "Patrolamento e cascalhamento"],
-    [/cascalhamento.*regularizacao|regularizacao.*cascalhamento/, "Cascalhamento e regularização"],
-    [/pavimentacao|asfaltamento/, "Pavimentação da via"],
-    [/limpeza.*rocada|rocada.*limpeza|capinagem/, "Limpeza e roçada"],
-    [/iluminacao|refletor|fiacao eletrica|lampada|luminaria/, "Manutenção da iluminação"],
-    [/lombada|quebra.?mola/, "Instalação de lombada"],
-    [/drenagem|aguas pluviais/, "Drenagem e melhoria da via"],
-    [/sinalizacao/, "Sinalização viária"],
-    [/poda|arvore/, "Poda e manejo de árvores"],
-    [/semaforo/, "Instalação e manutenção semafórica"],
-    [/faixa.*pedestre/, "Implantação de faixa de pedestres"],
-    [/praca publica|pracas publicas/, "Revitalização de praça pública"],
-    [/rede de esgoto|instalacao de esgoto/, "Instalação e reparo da rede de esgoto"],
-    [/limpeza.*(?:area|terreno) public|limpeza de terreno/, "Limpeza de área pública"],
-  ];
-  const matched = rules.find(([pattern]) => pattern.test(normalized));
-  if (matched) return matched[1];
-  const firstIdea = service
-    .replace(/^\d+\s*[-–—]\s*/, "")
-    .split(/\s+[—–-]\s+|[;:]|,\s+(?:na|no|em|para)\s+/i)[0]
-    .replace(/[.]$/, "")
-    .trim();
-  return concise(firstIdea || service, 78);
 }
 
 function normalizeProjectStatus(status: string): LegislativeStatusGroup {
@@ -278,6 +228,7 @@ function projectFromRow(row: unknown[]): LegislativeItemInput | null {
     year,
     title: projectTitle(summary),
     summary,
+    publicSummary: summary,
     author: author || VEREADOR_NAME,
     status,
     statusGroup: law.lawUrl ? "approved" : normalizeProjectStatus(status),
@@ -285,86 +236,17 @@ function projectFromRow(row: unknown[]): LegislativeItemInput | null {
     location: null,
     neighborhood: null,
     service: null,
+    reference: null,
     fullText: null,
     lawNumber: law.lawNumber,
     lawDate: law.lawDate,
     lawUrl: law.lawUrl,
     authorRole: containsJunior(author) ? "Autor principal" : "Coautor ou signatário",
+    enrichmentStatus: "not_applicable",
+    enrichmentError: null,
     occurredAt: parseBrazilianDate(date),
     rawJson: JSON.stringify(row),
   };
-}
-
-function cleanPdfText(value: string) {
-  return value
-    .replace(/Página \d+\/\d+\s*/gi, "")
-    .replace(/-- \d+ of \d+ --/gi, "")
-    .replace(/Câmara Municipal de Campo Grande\s+ESTADO DE MATO GROSSO DO SUL\s+Avenida Ricardo Brandão, 1600\.\s+CNPJ:[^\n]+\s*/gi, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function extractNeighborhood(text: string) {
-  const patterns = [
-    /Bairro:\s*([^,\n]+?)(?:,\s*Campo|,\s*CEP|\n|$)/i,
-    /BAIRRO\s+([A-ZÀ-Ý0-9 .'-]+?)(?:,\s*CEP|\s+CEP|,\s*EM CAMPO|,\s*CAMPO|\n)/i,
-    /(?:NA\s+)?REGIÃO\s+(?:DO|DA|DE)\s+([A-ZÀ-Ý0-9 .'-]+?)(?:,\s*EM CAMPO|,\s*CAMPO|\n)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern)?.[1];
-    if (match) return sentenceCase(match);
-  }
-  return null;
-}
-
-function cleanLocation(value: string) {
-  const cleaned = normalizeText(value)
-    .replace(/^completo:\s*/i, "")
-    .replace(/,?\s*Complemento:\s*$/i, "")
-    .replace(/\s*CEP Busca\s*$/i, "")
-    .replace(/,\s*n[º°o.]?\s*(?=,|Bairro:|CEP:|$)/gi, "")
-    .replace(/,?\s*(?:Bairro|CEP):\s*(?=,|$)/gi, "")
-    .replace(/\s*,\s*,+/g, ", ")
-    .replace(/^\s*[,;:-]+|[,;:-]+\s*$/g, "")
-    .replace(/[.]$/, "")
-    .trim();
-  return /\p{L}{3}/u.test(cleaned) ? cleaned : null;
-}
-
-function extractLocation(text: string) {
-  const section = text.match(/(?:4\D{0,4})?ENDEREÇO\s+([\s\S]*?)(?:Endereço completo:|Junior Coringa|$)/i)?.[1];
-  if (section) {
-    const cleaned = cleanLocation(section);
-    if (cleaned) return cleaned;
-  }
-  const streets = text.match(/\bNAS?\s+RUAS?\s+([\s\S]+?)(?=,\s*(?:NA\s+REGIÃO|NO\s+BAIRRO|EM\s+CAMPO)|\n\s*(?:NA\s+REGIÃO|NO\s+BAIRRO|EM\s+CAMPO))/i)?.[1];
-  if (streets) return cleanLocation(`Ruas ${sentenceCase(streets)}`);
-  const request = text.match(/((?:RUA|AVENIDA|ALAMEDA|TRAVESSA|ESTRADA|PRAÇA|RODOVIA)\s+[A-ZÀ-Ý0-9 .,'º°-]+?)(?:,\s*(?:ESPECIALMENTE|BAIRRO|CEP|EM CAMPO)|\s+BAIRRO|\n)/i)?.[1]
-    ?? text.match(/\b(?:na|no)\s+((?:rua|avenida|alameda|travessa|estrada|praça|rodovia)\s+[^,.;\n]+)/i)?.[1];
-  return request ? cleanLocation(sentenceCase(request)) : null;
-}
-
-function extractRequestedService(text: string) {
-  const request = text.match(
-    /SOLICITANDO\s+QUE\s+PROVIDENCIE[;:]?\s*((?:A|O)\s+[\s\S]+?)(?=\s+NAS?\s+(?:RUAS?|AVENIDAS?)|\s+(?:NO\s+BAIRRO|NA\s+REGIÃO)|[.]\s)/i,
-  )?.[1];
-  return request ? sentenceCase(normalizeText(request).replace(/[;,]+$/, "")) : null;
-}
-
-function buildIndicationDetails(summaryValue: string, pdfText: string | null): IndicationDetails {
-  const summary = sentenceCase(summaryValue).replace(/[.]$/, "");
-  const fullText = pdfText ? cleanPdfText(pdfText) : null;
-  const location = fullText ? extractLocation(fullText) : extractLocation(summary);
-  const neighborhood = fullText ? extractNeighborhood(fullText) : extractNeighborhood(summary);
-  const requestedService = fullText ? extractRequestedService(fullText) : null;
-  const filenameLikeSummary = /^indicacao\s+/i.test(normalizeForComparison(summary));
-  const service = (filenameLikeSummary ? requestedService : null) || summary || requestedService || "Solicitação de melhoria urbana";
-  const shortService = indicationServiceTitle(service);
-  const primaryLocation = cleanLocation(location?.split(/,\s*(?:proximidades|bairro|cep|campo grande)/i)[0]?.trim() ?? "");
-  const locationAlreadyPresent = primaryLocation && normalizeForComparison(service).includes(normalizeForComparison(primaryLocation));
-  const title = concise(locationAlreadyPresent || !primaryLocation ? shortService : `${shortService} — ${primaryLocation}`, 120);
-  return { location, neighborhood, service, fullText, title };
 }
 
 function retitleStoredIndications() {
@@ -420,15 +302,23 @@ async function indicationFromRow(row: unknown[], loadPdf: boolean): Promise<{ it
   const existing = getLegislativeItemByExternalId(externalId);
   let pdfText = existing?.fullText ?? null;
   let pdfLoaded = false;
+  let enrichmentAttempted = false;
+  let enrichmentError: string | null = existing?.enrichmentError ?? null;
   if (!pdfText && loadPdf && sourceUrl !== LEGIS_BASE_URL) {
+    enrichmentAttempted = true;
     try {
       pdfText = await fetchPdfText(sourceUrl);
       pdfLoaded = true;
+      enrichmentError = null;
     } catch (error) {
+      enrichmentError = error instanceof Error ? error.message : "Não foi possível ler o documento oficial.";
       console.warn(`Não foi possível detalhar a indicação ${number}/${year}:`, error);
     }
   }
   const details = buildIndicationDetails(summary, pdfText);
+  const enrichmentStatus = enrichmentError && !pdfText
+    ? "failed"
+    : pdfText && details.enrichmentStatus === "pending" ? "manual_review" : details.enrichmentStatus;
   return {
     pdfLoaded,
     item: {
@@ -439,6 +329,7 @@ async function indicationFromRow(row: unknown[], loadPdf: boolean): Promise<{ it
       year,
       title: details.title,
       summary: sentenceCase(summary),
+      publicSummary: details.publicSummary,
       author: author || VEREADOR_NAME,
       status: "Protocolada",
       statusGroup: "protocolled",
@@ -446,11 +337,16 @@ async function indicationFromRow(row: unknown[], loadPdf: boolean): Promise<{ it
       location: details.location,
       neighborhood: details.neighborhood,
       service: details.service,
+      reference: details.reference,
       fullText: details.fullText,
       lawNumber: null,
       lawDate: null,
       lawUrl: null,
       authorRole: "Autor principal",
+      enrichmentStatus,
+      enrichmentError,
+      enrichmentAttempted,
+      initialPublished: enrichmentStatus === "complete",
       occurredAt: parseBrazilianDate(date),
       rawJson: JSON.stringify(row),
     },
@@ -837,13 +733,28 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       .map(projectFromRow)
       .filter((item): item is LegislativeItemInput => Boolean(item))
       .filter((item) => mode === "daily" || Boolean(item.lawUrl));
-    indicationRows.sort((a, b) => parseBrazilianDate(b[3]).localeCompare(parseBrazilianDate(a[3])));
-    let remainingPdfDetails = Number.isFinite(PDF_DETAILS_PER_RUN) ? Math.max(PDF_DETAILS_PER_RUN, 0) : 50;
+    const enrichmentPriority = new Map<unknown[], number>();
+    for (const row of indicationRows) {
+      const documentId = normalizeText(row[7]);
+      const existing = documentId ? getLegislativeItemByExternalId(`camara-indication:${documentId}`) : null;
+      enrichmentPriority.set(row, existing && ["pending", "failed", "manual_review"].includes(existing.enrichmentStatus) ? 0 : existing ? 2 : 1);
+    }
+    indicationRows.sort((a, b) => {
+      const priority = (row: unknown[]) => {
+        return enrichmentPriority.get(row) ?? 2;
+      };
+      return priority(a) - priority(b) || parseBrazilianDate(b[3]).localeCompare(parseBrazilianDate(a[3]));
+    });
+    const configuredPdfLimit = mode === "indications" ? PDF_BACKFILL_PER_RUN : PDF_DETAILS_PER_RUN;
+    let remainingPdfDetails = Number.isFinite(configuredPdfLimit) ? Math.max(configuredPdfLimit, 0) : mode === "indications" ? 250 : 50;
     const parsedIndications = await mapWithConcurrency(indicationRows, 4, async (row) => {
       const documentId = normalizeText(row[7]);
       const existing = documentId ? getLegislativeItemByExternalId(`camara-indication:${documentId}`) : null;
       const isIndication = normalizeForComparison(getDefinitionValue(row[0], "Tipo")) === "indicacao";
-      const loadPdf = isIndication && !existing && remainingPdfDetails > 0;
+      const rowSummary = normalizeText(row[5]) || getDefinitionValue(row[0], "Assunto");
+      const preview = isIndication && rowSummary ? buildIndicationDetails(rowSummary, existing?.fullText ?? null) : null;
+      const needsEnrichment = !existing || ["pending", "failed", "manual_review"].includes(existing.enrichmentStatus) || preview?.enrichmentStatus === "pending";
+      const loadPdf = isIndication && needsEnrichment && !existing?.fullText && remainingPdfDetails > 0;
       if (loadPdf) remainingPdfDetails -= 1;
       return indicationFromRow(row, loadPdf);
     });
@@ -867,6 +778,10 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,
       retitled,
+      enriched: indications.filter((item) => item.enrichmentStatus === "complete").length,
+      pending: indications.filter((item) => item.enrichmentStatus === "pending").length,
+      failed: indications.filter((item) => item.enrichmentStatus === "failed").length,
+      manualReview: indications.filter((item) => item.enrichmentStatus === "manual_review").length,
     };
     finishCamaraSyncRun(runId, { status: "success", ...result });
     return result;

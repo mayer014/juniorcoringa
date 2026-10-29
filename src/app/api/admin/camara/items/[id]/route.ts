@@ -1,15 +1,16 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { deleteLegislativeItem, updateLegislativeVisibility } from "@/lib/db";
-import { isSameOrigin } from "@/lib/validation";
+import { deleteLegislativeItem, updateLegislativeReview, updateLegislativeVisibility } from "@/lib/db";
+import { isSameOrigin, validateLegislativeReviewInput } from "@/lib/validation";
 
 type Context = { params: Promise<{ id: string }> };
 
-function refreshLegislativePages() {
+function refreshLegislativePages(id?: number) {
   revalidatePath("/");
   revalidatePath("/atuacao-legislativa");
   revalidatePath("/admin/integracao");
+  if (id) revalidatePath(`/atuacao-legislativa/${id}`);
 }
 
 export async function PATCH(request: Request, { params }: Context) {
@@ -17,13 +18,18 @@ export async function PATCH(request: Request, { params }: Context) {
   if (!(await getSession())) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   const { id: rawId } = await params;
   const id = Number.parseInt(rawId, 10);
-  const body = await request.json().catch(() => null) as { published?: unknown } | null;
-  if (!Number.isFinite(id) || typeof body?.published !== "boolean") {
-    return NextResponse.json({ error: "Dados inválidos." }, { status: 400 });
-  }
-  const item = updateLegislativeVisibility(id, body.published);
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  if (!Number.isFinite(id) || !body) return NextResponse.json({ error: "Dados inválidos." }, { status: 400 });
+  const item = typeof body.published === "boolean"
+    ? updateLegislativeVisibility(id, body.published)
+    : (() => {
+        const parsed = validateLegislativeReviewInput(body);
+        if (!parsed.data) return parsed;
+        return updateLegislativeReview(id, parsed.data);
+      })();
+  if (item && "error" in item) return NextResponse.json({ error: item.error }, { status: 400 });
   if (!item) return NextResponse.json({ error: "Registro não encontrado." }, { status: 404 });
-  refreshLegislativePages();
+  refreshLegislativePages(id);
   return NextResponse.json({ item });
 }
 

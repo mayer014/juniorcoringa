@@ -1,4 +1,4 @@
-import type { GalleryItemInput, GalleryStatus, PostCategory, PostInput, PostStatus } from "@/lib/types";
+import type { GalleryItemInput, GalleryStatus, LegislativeItemReviewInput, PostCategory, PostInput, PostStatus } from "@/lib/types";
 
 const categories: PostCategory[] = ["Notícia", "Projeto", "Agenda", "Inclusão"];
 const statuses: PostStatus[] = ["draft", "published"];
@@ -83,4 +83,38 @@ export function validateGalleryItems(value: unknown): { data?: GalleryItemInput[
     parsed.push(result.data);
   }
   return { data: parsed };
+}
+
+export function validateLegislativeReviewInput(value: unknown): { data?: LegislativeItemReviewInput; error?: string } {
+  if (!value || typeof value !== "object") return { error: "Dados inválidos." };
+  const body = value as Record<string, unknown>;
+  const optionalText = (key: string, maximum: number) => {
+    const raw = body[key];
+    if (raw === null || raw === undefined || raw === "") return { value: null as string | null };
+    if (typeof raw !== "string") return { error: `O campo ${key} é inválido.` };
+    const text = raw.trim();
+    if (text.length > maximum) return { error: `O campo ${key} deve ter no máximo ${maximum} caracteres.` };
+    return { value: text || null };
+  };
+  const title = optionalText("title", 180);
+  const publicSummary = optionalText("publicSummary", 500);
+  const service = optionalText("service", 500);
+  const location = optionalText("location", 500);
+  const neighborhood = optionalText("neighborhood", 180);
+  const reference = optionalText("reference", 300);
+  const invalid = [title, publicSummary, service, location, neighborhood, reference].find((field) => field.error);
+  if (invalid?.error) return { error: invalid.error };
+  if (title.value && title.value.length < 5) return { error: "O título deve ter pelo menos 5 caracteres." };
+  const enrichmentStatus = body.enrichmentStatus === "complete" ? "complete" : "manual_review";
+  return {
+    data: {
+      title: title.value ?? null,
+      publicSummary: publicSummary.value ?? null,
+      service: service.value ?? null,
+      location: location.value ?? null,
+      neighborhood: neighborhood.value ?? null,
+      reference: reference.value ?? null,
+      enrichmentStatus,
+    },
+  };
 }

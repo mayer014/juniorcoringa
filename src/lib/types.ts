@@ -61,6 +61,7 @@ export type PostOption = {
 
 export type LegislativeKind = "project" | "indication";
 export type LegislativeStatusGroup = "processing" | "approved" | "archived" | "protocolled";
+export type LegislativeEnrichmentStatus = "pending" | "complete" | "failed" | "manual_review" | "not_applicable";
 
 export type LegislativeItem = {
   id: number;
@@ -71,6 +72,7 @@ export type LegislativeItem = {
   year: number;
   title: string;
   summary: string;
+  publicSummary: string;
   author: string;
   status: string;
   statusGroup: LegislativeStatusGroup;
@@ -78,6 +80,7 @@ export type LegislativeItem = {
   location: string | null;
   neighborhood: string | null;
   service: string | null;
+  reference: string | null;
   fullText: string | null;
   lawNumber: string | null;
   lawDate: string | null;
@@ -88,10 +91,36 @@ export type LegislativeItem = {
   lastSeenAt: string;
   updatedAt: string;
   published: boolean;
+  enrichmentStatus: LegislativeEnrichmentStatus;
+  enrichmentError: string | null;
+  enrichmentAttempts: number;
+  lastEnrichmentAt: string | null;
+  titleOverride: string | null;
+  summaryOverride: string | null;
+  serviceOverride: string | null;
+  locationOverride: string | null;
+  neighborhoodOverride: string | null;
+  referenceOverride: string | null;
 };
 
-export type LegislativeItemInput = Omit<LegislativeItem, "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt" | "published"> & {
+export type LegislativeItemInput = Omit<LegislativeItem,
+  "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt" | "published" |
+  "enrichmentAttempts" | "lastEnrichmentAt" | "titleOverride" | "summaryOverride" |
+  "serviceOverride" | "locationOverride" | "neighborhoodOverride" | "referenceOverride"
+> & {
   rawJson?: string;
+  enrichmentAttempted?: boolean;
+  initialPublished?: boolean;
+};
+
+export type LegislativeItemReviewInput = {
+  title: string | null;
+  publicSummary: string | null;
+  service: string | null;
+  location: string | null;
+  neighborhood: string | null;
+  reference: string | null;
+  enrichmentStatus: "complete" | "manual_review";
 };
 
 export type CamaraSyncRun = {

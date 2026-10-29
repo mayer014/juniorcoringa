@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
-import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeItem, LegislativeItemInput, LegislativeKind, LegislativeStatusGroup, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
+import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeEnrichmentStatus, LegislativeItem, LegislativeItemInput, LegislativeItemReviewInput, LegislativeKind, LegislativeStatusGroup, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
 
 type PostRow = {
   id: number;
@@ -42,6 +42,7 @@ type LegislativeRow = {
   year: number;
   title: string;
   summary: string;
+  public_summary: string | null;
   author: string;
   status: string;
   status_group: LegislativeStatusGroup;
@@ -49,6 +50,7 @@ type LegislativeRow = {
   location: string | null;
   neighborhood: string | null;
   service: string | null;
+  reference: string | null;
   full_text: string | null;
   law_number: string | null;
   law_date: string | null;
@@ -60,6 +62,17 @@ type LegislativeRow = {
   updated_at: string;
   published: number;
   deleted: number;
+  enrichment_status: LegislativeEnrichmentStatus;
+  enrichment_error: string | null;
+  enrichment_attempts: number;
+  last_enrichment_at: string | null;
+  auto_hidden: number;
+  title_override: string | null;
+  summary_override: string | null;
+  service_override: string | null;
+  location_override: string | null;
+  neighborhood_override: string | null;
+  reference_override: string | null;
 };
 
 type SyncRunRow = {
@@ -133,6 +146,7 @@ function openDatabase() {
       year INTEGER NOT NULL,
       title TEXT NOT NULL,
       summary TEXT NOT NULL,
+      public_summary TEXT,
       author TEXT NOT NULL,
       status TEXT NOT NULL,
       status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
@@ -140,6 +154,7 @@ function openDatabase() {
       location TEXT,
       neighborhood TEXT,
       service TEXT,
+      reference TEXT,
       full_text TEXT,
       law_number TEXT,
       law_date TEXT,
@@ -151,6 +166,17 @@ function openDatabase() {
       updated_at TEXT NOT NULL,
       published INTEGER NOT NULL DEFAULT 1,
       deleted INTEGER NOT NULL DEFAULT 0,
+      enrichment_status TEXT NOT NULL DEFAULT 'not_applicable',
+      enrichment_error TEXT,
+      enrichment_attempts INTEGER NOT NULL DEFAULT 0,
+      last_enrichment_at TEXT,
+      auto_hidden INTEGER NOT NULL DEFAULT 0,
+      title_override TEXT,
+      summary_override TEXT,
+      service_override TEXT,
+      location_override TEXT,
+      neighborhood_override TEXT,
+      reference_override TEXT,
       raw_json TEXT
     );
 
@@ -227,6 +253,7 @@ db.exec(`
     year INTEGER NOT NULL,
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
+    public_summary TEXT,
     author TEXT NOT NULL,
     status TEXT NOT NULL,
     status_group TEXT NOT NULL CHECK(status_group IN ('processing', 'approved', 'archived', 'protocolled')),
@@ -234,6 +261,7 @@ db.exec(`
     location TEXT,
     neighborhood TEXT,
     service TEXT,
+    reference TEXT,
     full_text TEXT,
     law_number TEXT,
     law_date TEXT,
@@ -245,6 +273,17 @@ db.exec(`
     updated_at TEXT NOT NULL,
     published INTEGER NOT NULL DEFAULT 1,
     deleted INTEGER NOT NULL DEFAULT 0,
+    enrichment_status TEXT NOT NULL DEFAULT 'not_applicable',
+    enrichment_error TEXT,
+    enrichment_attempts INTEGER NOT NULL DEFAULT 0,
+    last_enrichment_at TEXT,
+    auto_hidden INTEGER NOT NULL DEFAULT 0,
+    title_override TEXT,
+    summary_override TEXT,
+    service_override TEXT,
+    location_override TEXT,
+    neighborhood_override TEXT,
+    reference_override TEXT,
     raw_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_legislative_publication
@@ -272,22 +311,55 @@ db.exec(`
 `);
 
 const legislativeColumns = db.prepare("PRAGMA table_info(legislative_items)").all() as Array<{ name: string }>;
+const addingEnrichmentStatus = !legislativeColumns.some((column) => column.name === "enrichment_status");
 const legislativeMigrations = [
   ["location", "TEXT"],
   ["neighborhood", "TEXT"],
   ["service", "TEXT"],
+  ["reference", "TEXT"],
   ["full_text", "TEXT"],
+  ["public_summary", "TEXT"],
   ["law_number", "TEXT"],
   ["law_date", "TEXT"],
   ["law_url", "TEXT"],
   ["author_role", "TEXT"],
   ["published", "INTEGER NOT NULL DEFAULT 1"],
   ["deleted", "INTEGER NOT NULL DEFAULT 0"],
+  ["enrichment_status", "TEXT NOT NULL DEFAULT 'not_applicable'"],
+  ["enrichment_error", "TEXT"],
+  ["enrichment_attempts", "INTEGER NOT NULL DEFAULT 0"],
+  ["last_enrichment_at", "TEXT"],
+  ["auto_hidden", "INTEGER NOT NULL DEFAULT 0"],
+  ["title_override", "TEXT"],
+  ["summary_override", "TEXT"],
+  ["service_override", "TEXT"],
+  ["location_override", "TEXT"],
+  ["neighborhood_override", "TEXT"],
+  ["reference_override", "TEXT"],
 ] as const;
 for (const [name, type] of legislativeMigrations) {
   if (!legislativeColumns.some((column) => column.name === name)) {
     db.exec(`ALTER TABLE legislative_items ADD COLUMN ${name} ${type}`);
   }
+}
+if (addingEnrichmentStatus) {
+  db.exec(`
+    UPDATE legislative_items
+    SET enrichment_status = CASE
+      WHEN kind <> 'indication' OR lower(type) NOT LIKE 'indica%' THEN 'not_applicable'
+      WHEN coalesce(trim(location), '') <> '' OR coalesce(trim(neighborhood), '') <> '' THEN 'complete'
+      ELSE 'pending'
+    END;
+    UPDATE legislative_items
+    SET published = 0, auto_hidden = 1
+    WHERE kind = 'indication'
+      AND lower(type) LIKE 'indica%'
+      AND enrichment_status = 'pending'
+      AND published = 1;
+    UPDATE legislative_items
+    SET published = 0, auto_hidden = 1
+    WHERE kind = 'indication' AND lower(type) NOT LIKE 'indica%' AND published = 1;
+  `);
 }
 
 const syncRunColumns = db.prepare("PRAGMA table_info(camara_sync_runs)").all() as Array<{ name: string }>;
@@ -353,15 +425,17 @@ function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | 
     type: row.type,
     number: row.number,
     year: row.year,
-    title: row.title,
+    title: row.title_override || row.title,
     summary: row.summary,
+    publicSummary: row.summary_override || row.public_summary || row.summary,
     author: row.author,
     status: row.status,
     statusGroup: row.status_group,
     sourceUrl: row.source_url,
-    location: row.location,
-    neighborhood: row.neighborhood,
-    service: row.service,
+    location: row.location_override || row.location,
+    neighborhood: row.neighborhood_override || row.neighborhood,
+    service: row.service_override || row.service,
+    reference: row.reference_override || row.reference,
     fullText: row.full_text,
     lawNumber: row.law_number,
     lawDate: row.law_date,
@@ -372,6 +446,16 @@ function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | 
     lastSeenAt: row.last_seen_at,
     updatedAt: row.updated_at,
     published: Boolean(row.published),
+    enrichmentStatus: row.enrichment_status,
+    enrichmentError: row.enrichment_error,
+    enrichmentAttempts: row.enrichment_attempts,
+    lastEnrichmentAt: row.last_enrichment_at,
+    titleOverride: row.title_override,
+    summaryOverride: row.summary_override,
+    serviceOverride: row.service_override,
+    locationOverride: row.location_override,
+    neighborhoodOverride: row.neighborhood_override,
+    referenceOverride: row.reference_override,
   };
 }
 
@@ -661,8 +745,8 @@ export function listLegislativeItems(options: {
   }
   if (options.query?.trim()) {
     const query = `%${options.query.trim()}%`;
-    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR service LIKE ? OR number LIKE ?)");
-    values.push(query, query, query, query, query, query);
+    clauses.push("(coalesce(title_override, title) LIKE ? OR coalesce(summary_override, public_summary, summary) LIKE ? OR coalesce(location_override, location) LIKE ? OR coalesce(neighborhood_override, neighborhood) LIKE ? OR coalesce(service_override, service) LIKE ? OR coalesce(reference_override, reference) LIKE ? OR number LIKE ?)");
+    values.push(query, query, query, query, query, query, query);
   }
   values.push(Math.min(Math.max(options.limit ?? 250, 1), 500));
   values.push(Math.max(options.offset ?? 0, 0));
@@ -688,8 +772,8 @@ export function countLegislativeItems(options: {
   if (options.year) { clauses.push("year = ?"); values.push(options.year); }
   if (options.query?.trim()) {
     const query = `%${options.query.trim()}%`;
-    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR service LIKE ? OR number LIKE ?)");
-    values.push(query, query, query, query, query, query);
+    clauses.push("(coalesce(title_override, title) LIKE ? OR coalesce(summary_override, public_summary, summary) LIKE ? OR coalesce(location_override, location) LIKE ? OR coalesce(neighborhood_override, neighborhood) LIKE ? OR coalesce(service_override, service) LIKE ? OR coalesce(reference_override, reference) LIKE ? OR number LIKE ?)");
+    values.push(query, query, query, query, query, query, query);
   }
   const row = db.prepare(`SELECT COUNT(*) AS total FROM legislative_items WHERE ${clauses.join(" AND ")}`).get(...values) as { total: number };
   return row.total;
@@ -715,7 +799,7 @@ export function getLegislativeCounts() {
   const row = db.prepare(`
     SELECT
       COUNT(*) AS total,
-      SUM(CASE WHEN kind = 'indication' THEN 1 ELSE 0 END) AS indications,
+      SUM(CASE WHEN kind = 'indication' AND lower(type) LIKE 'indica%' THEN 1 ELSE 0 END) AS indications,
       SUM(CASE WHEN kind = 'project' AND status_group = 'processing' THEN 1 ELSE 0 END) AS processing,
       SUM(CASE WHEN kind = 'project' AND status_group = 'approved' THEN 1 ELSE 0 END) AS approved
     FROM legislative_items WHERE published = 1 AND deleted = 0
@@ -725,6 +809,24 @@ export function getLegislativeCounts() {
     indications: row.indications ?? 0,
     processing: row.processing ?? 0,
     approved: row.approved ?? 0,
+  };
+}
+
+export function getLegislativeQualityCounts() {
+  const row = db.prepare(`
+    SELECT
+      SUM(CASE WHEN enrichment_status = 'complete' THEN 1 ELSE 0 END) AS complete,
+      SUM(CASE WHEN enrichment_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN enrichment_status = 'failed' THEN 1 ELSE 0 END) AS failed,
+      SUM(CASE WHEN enrichment_status = 'manual_review' THEN 1 ELSE 0 END) AS manual_review
+    FROM legislative_items
+    WHERE deleted = 0 AND kind = 'indication' AND lower(type) LIKE 'indica%'
+  `).get() as { complete: number | null; pending: number | null; failed: number | null; manual_review: number | null };
+  return {
+    complete: row.complete ?? 0,
+    pending: row.pending ?? 0,
+    failed: row.failed ?? 0,
+    manualReview: row.manual_review ?? 0,
   };
 }
 
@@ -740,6 +842,7 @@ export function updateLegislativeItemTitle(id: number, title: string) {
 export function listAdminLegislativeItems(options: {
   kind?: LegislativeKind;
   visibility?: "published" | "hidden";
+  quality?: "pending" | "failed" | "manual_review" | "complete";
   query?: string;
   limit?: number;
   offset?: number;
@@ -754,10 +857,14 @@ export function listAdminLegislativeItems(options: {
     clauses.push("published = ?");
     values.push(options.visibility === "published" ? 1 : 0);
   }
+  if (options.quality) {
+    clauses.push("enrichment_status = ?");
+    values.push(options.quality);
+  }
   if (options.query?.trim()) {
     const query = `%${options.query.trim()}%`;
-    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR number LIKE ? OR law_number LIKE ?)");
-    values.push(query, query, query, query, query, query);
+    clauses.push("(coalesce(title_override, title) LIKE ? OR coalesce(summary_override, public_summary, summary) LIKE ? OR coalesce(location_override, location) LIKE ? OR coalesce(neighborhood_override, neighborhood) LIKE ? OR coalesce(reference_override, reference) LIKE ? OR number LIKE ? OR law_number LIKE ?)");
+    values.push(query, query, query, query, query, query, query);
   }
   values.push(Math.min(Math.max(options.limit ?? 50, 1), 100));
   values.push(Math.max(options.offset ?? 0, 0));
@@ -773,6 +880,7 @@ export function listAdminLegislativeItems(options: {
 export function countAdminLegislativeItems(options: {
   kind?: LegislativeKind;
   visibility?: "published" | "hidden";
+  quality?: "pending" | "failed" | "manual_review" | "complete";
   query?: string;
 } = {}) {
   const clauses = ["deleted = 0"];
@@ -785,10 +893,14 @@ export function countAdminLegislativeItems(options: {
     clauses.push("published = ?");
     values.push(options.visibility === "published" ? 1 : 0);
   }
+  if (options.quality) {
+    clauses.push("enrichment_status = ?");
+    values.push(options.quality);
+  }
   if (options.query?.trim()) {
     const query = `%${options.query.trim()}%`;
-    clauses.push("(title LIKE ? OR summary LIKE ? OR location LIKE ? OR neighborhood LIKE ? OR number LIKE ? OR law_number LIKE ?)");
-    values.push(query, query, query, query, query, query);
+    clauses.push("(coalesce(title_override, title) LIKE ? OR coalesce(summary_override, public_summary, summary) LIKE ? OR coalesce(location_override, location) LIKE ? OR coalesce(neighborhood_override, neighborhood) LIKE ? OR coalesce(reference_override, reference) LIKE ? OR number LIKE ? OR law_number LIKE ?)");
+    values.push(query, query, query, query, query, query, query);
   }
   const row = db.prepare(`SELECT COUNT(*) AS total FROM legislative_items WHERE ${clauses.join(" AND ")}`).get(...values) as { total: number };
   return row.total;
@@ -798,9 +910,25 @@ export function updateLegislativeVisibility(id: number, published: boolean) {
   const now = new Date().toISOString();
   const result = db.prepare(`
     UPDATE legislative_items
-    SET published = ?, updated_at = ?
+    SET published = ?, auto_hidden = 0, updated_at = ?
     WHERE id = ? AND deleted = 0
   `).run(published ? 1 : 0, now, id);
+  if (!result.changes) return null;
+  return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
+}
+
+export function updateLegislativeReview(id: number, input: LegislativeItemReviewInput) {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE legislative_items SET
+      title_override = ?, summary_override = ?, service_override = ?, location_override = ?,
+      neighborhood_override = ?, reference_override = ?, enrichment_status = ?,
+      enrichment_error = NULL, auto_hidden = 0, updated_at = ?
+    WHERE id = ? AND deleted = 0
+  `).run(
+    input.title, input.publicSummary, input.service, input.location,
+    input.neighborhood, input.reference, input.enrichmentStatus, now, id,
+  );
   if (!result.changes) return null;
   return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
 }
@@ -819,45 +947,72 @@ export function upsertLegislativeItem(input: LegislativeItemInput) {
     "SELECT * FROM legislative_items WHERE external_id = ?",
   ).get(input.externalId) as LegislativeRow | undefined;
   const now = new Date().toISOString();
+  const enrichmentAttempt = input.enrichmentAttempted ? 1 : 0;
+  const initialPublished = input.initialPublished ?? input.enrichmentStatus !== "pending";
   if (!existing) {
     db.prepare(`
       INSERT INTO legislative_items
-        (external_id, kind, type, number, year, title, summary, author, status, status_group,
-         source_url, location, neighborhood, service, full_text, law_number, law_date, law_url,
-         author_role, occurred_at, first_seen_at, last_seen_at, updated_at, raw_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      input.externalId, input.kind, input.type, input.number, input.year, input.title, input.summary,
-      input.author, input.status, input.statusGroup, input.sourceUrl, input.location, input.neighborhood,
-      input.service, input.fullText, input.lawNumber, input.lawDate, input.lawUrl, input.authorRole,
-      input.occurredAt, now, now, now,
-      input.rawJson ?? null,
-    );
+        (external_id, kind, type, number, year, title, summary, public_summary, author, status, status_group,
+         source_url, location, neighborhood, service, reference, full_text, law_number, law_date, law_url,
+         author_role, occurred_at, first_seen_at, last_seen_at, updated_at, published, auto_hidden,
+         enrichment_status, enrichment_error, enrichment_attempts, last_enrichment_at, raw_json)
+      VALUES
+        (@externalId, @kind, @type, @number, @year, @title, @summary, @publicSummary, @author, @status, @statusGroup,
+         @sourceUrl, @location, @neighborhood, @service, @reference, @fullText, @lawNumber, @lawDate, @lawUrl,
+         @authorRole, @occurredAt, @now, @now, @now, @published, @autoHidden,
+         @enrichmentStatus, @enrichmentError, @enrichmentAttempts, @lastEnrichmentAt, @rawJson)
+    `).run({
+      ...input,
+      published: initialPublished ? 1 : 0,
+      autoHidden: initialPublished ? 0 : 1,
+      enrichmentAttempts: enrichmentAttempt,
+      lastEnrichmentAt: enrichmentAttempt ? now : null,
+      rawJson: input.rawJson ?? null,
+      now,
+    });
     return "inserted" as const;
   }
 
   const changed = existing.type !== input.type || existing.number !== input.number || existing.year !== input.year ||
-    existing.title !== input.title || existing.summary !== input.summary || existing.author !== input.author ||
+    existing.title !== input.title || existing.summary !== input.summary || existing.public_summary !== input.publicSummary || existing.author !== input.author ||
     existing.status !== input.status || existing.status_group !== input.statusGroup ||
     existing.source_url !== input.sourceUrl || existing.location !== input.location ||
     existing.neighborhood !== input.neighborhood || existing.service !== input.service ||
+    existing.reference !== input.reference || existing.enrichment_status !== input.enrichmentStatus ||
+    existing.enrichment_error !== input.enrichmentError ||
     existing.full_text !== input.fullText || existing.law_number !== input.lawNumber ||
     existing.law_date !== input.lawDate || existing.law_url !== input.lawUrl ||
     existing.author_role !== input.authorRole || existing.occurred_at !== input.occurredAt;
   db.prepare(`
     UPDATE legislative_items SET
-      kind = ?, type = ?, number = ?, year = ?, title = ?, summary = ?, author = ?, status = ?,
-      status_group = ?, source_url = ?, location = ?, neighborhood = ?, service = ?, full_text = ?,
-      law_number = ?, law_date = ?, law_url = ?, author_role = ?, occurred_at = ?, last_seen_at = ?,
-      updated_at = CASE WHEN ? = 1 THEN ? ELSE updated_at END, raw_json = ?
-    WHERE id = ?
-  `).run(
-    input.kind, input.type, input.number, input.year, input.title, input.summary, input.author,
-    input.status, input.statusGroup, input.sourceUrl, input.location, input.neighborhood, input.service,
-    input.fullText, input.lawNumber, input.lawDate, input.lawUrl, input.authorRole, input.occurredAt,
-    now, changed ? 1 : 0, now,
-    input.rawJson ?? null, existing.id,
-  );
+      kind = @kind, type = @type, number = @number, year = @year, title = @title, summary = @summary,
+      public_summary = @publicSummary, author = @author, status = @status, status_group = @statusGroup,
+      source_url = @sourceUrl, location = @location, neighborhood = @neighborhood, service = @service,
+      reference = @reference, full_text = @fullText, law_number = @lawNumber, law_date = @lawDate,
+      law_url = @lawUrl, author_role = @authorRole, occurred_at = @occurredAt, last_seen_at = @now,
+      enrichment_status = @enrichmentStatus, enrichment_error = @enrichmentError,
+      enrichment_attempts = enrichment_attempts + @enrichmentAttempt,
+      last_enrichment_at = CASE WHEN @enrichmentAttempt = 1 THEN @now ELSE last_enrichment_at END,
+      published = CASE
+        WHEN @enrichmentStatus = 'complete' AND auto_hidden = 1 THEN 1
+        WHEN @enrichmentStatus IN ('pending', 'failed', 'manual_review') AND published = 1 AND title_override IS NULL THEN 0
+        ELSE published
+      END,
+      auto_hidden = CASE
+        WHEN @enrichmentStatus = 'complete' AND auto_hidden = 1 THEN 0
+        WHEN @enrichmentStatus IN ('pending', 'failed', 'manual_review') AND published = 1 AND title_override IS NULL THEN 1
+        ELSE auto_hidden
+      END,
+      updated_at = CASE WHEN @changed = 1 THEN @now ELSE updated_at END, raw_json = @rawJson
+    WHERE id = @id
+  `).run({
+    ...input,
+    enrichmentAttempt,
+    changed: changed ? 1 : 0,
+    rawJson: input.rawJson ?? null,
+    now,
+    id: existing.id,
+  });
   return changed ? "updated" as const : "unchanged" as const;
 }
 
