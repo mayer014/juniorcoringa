@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
-import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeEnrichmentStatus, LegislativeItem, LegislativeItemInput, LegislativeItemReviewInput, LegislativeKind, LegislativeStatusGroup, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
+import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeEnrichmentStatus, LegislativeItem, LegislativeItemInput, LegislativeItemReviewInput, LegislativeKind, LegislativeStatusGroup, OfficialNewsCandidate, OfficialNewsQueueCounts, OfficialNewsQueueItem, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
 
 type PostRow = {
   id: number;
@@ -17,6 +17,8 @@ type PostRow = {
   created_at: string;
   updated_at: string;
   reading_minutes?: number;
+  source_id?: string | null;
+  source_url?: string | null;
 };
 
 type GalleryRow = {
@@ -61,6 +63,7 @@ type LegislativeRow = {
   last_seen_at: string;
   updated_at: string;
   published: number;
+  featured: number;
   deleted: number;
   enrichment_status: LegislativeEnrichmentStatus;
   enrichment_error: string | null;
@@ -87,9 +90,27 @@ type SyncRunRow = {
   unchanged: number;
   news_inserted: number;
   news_updated: number;
-  mode: "daily" | "history" | "indications";
+  news_found: number;
+  news_pending: number;
+  news_failed: number;
+  mode: "daily" | "history" | "indications" | "news";
   trigger_source: "manual" | "scheduled";
   error: string | null;
+};
+
+type OfficialNewsQueueRow = {
+  source_id: string;
+  source_url: string;
+  title: string;
+  excerpt: string | null;
+  image_url: string | null;
+  published_at: string;
+  status: "pending" | "complete" | "failed";
+  attempts: number;
+  last_error: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_attempt_at: string | null;
 };
 
 const globalForDb = globalThis as unknown as { juniorCoringaDb?: Database.Database };
@@ -165,6 +186,7 @@ function openDatabase() {
       last_seen_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       published INTEGER NOT NULL DEFAULT 1,
+      featured INTEGER NOT NULL DEFAULT 0,
       deleted INTEGER NOT NULL DEFAULT 0,
       enrichment_status TEXT NOT NULL DEFAULT 'not_applicable',
       enrichment_error TEXT,
@@ -197,6 +219,9 @@ function openDatabase() {
       unchanged INTEGER NOT NULL DEFAULT 0,
       news_inserted INTEGER NOT NULL DEFAULT 0,
       news_updated INTEGER NOT NULL DEFAULT 0,
+      news_found INTEGER NOT NULL DEFAULT 0,
+      news_pending INTEGER NOT NULL DEFAULT 0,
+      news_failed INTEGER NOT NULL DEFAULT 0,
       mode TEXT NOT NULL DEFAULT 'daily',
       trigger_source TEXT NOT NULL DEFAULT 'manual',
       error TEXT
@@ -204,6 +229,24 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
       ON camara_sync_runs(started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS official_news_queue (
+      source_id TEXT PRIMARY KEY,
+      source_url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      excerpt TEXT,
+      image_url TEXT,
+      published_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'complete', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      last_attempt_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_official_news_queue_status
+      ON official_news_queue(status, attempts, published_at DESC);
   `);
 
   const columns = database.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>;
@@ -272,6 +315,7 @@ db.exec(`
     last_seen_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     published INTEGER NOT NULL DEFAULT 1,
+    featured INTEGER NOT NULL DEFAULT 0,
     deleted INTEGER NOT NULL DEFAULT 0,
     enrichment_status TEXT NOT NULL DEFAULT 'not_applicable',
     enrichment_error TEXT,
@@ -302,12 +346,31 @@ db.exec(`
     unchanged INTEGER NOT NULL DEFAULT 0,
     news_inserted INTEGER NOT NULL DEFAULT 0,
     news_updated INTEGER NOT NULL DEFAULT 0,
+    news_found INTEGER NOT NULL DEFAULT 0,
+    news_pending INTEGER NOT NULL DEFAULT 0,
+    news_failed INTEGER NOT NULL DEFAULT 0,
     mode TEXT NOT NULL DEFAULT 'daily',
     trigger_source TEXT NOT NULL DEFAULT 'manual',
     error TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_camara_sync_runs_started
     ON camara_sync_runs(started_at DESC);
+  CREATE TABLE IF NOT EXISTS official_news_queue (
+    source_id TEXT PRIMARY KEY,
+    source_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    excerpt TEXT,
+    image_url TEXT,
+    published_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'complete', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_attempt_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_official_news_queue_status
+    ON official_news_queue(status, attempts, published_at DESC);
 `);
 
 const legislativeColumns = db.prepare("PRAGMA table_info(legislative_items)").all() as Array<{ name: string }>;
@@ -324,6 +387,7 @@ const legislativeMigrations = [
   ["law_url", "TEXT"],
   ["author_role", "TEXT"],
   ["published", "INTEGER NOT NULL DEFAULT 1"],
+  ["featured", "INTEGER NOT NULL DEFAULT 0"],
   ["deleted", "INTEGER NOT NULL DEFAULT 0"],
   ["enrichment_status", "TEXT NOT NULL DEFAULT 'not_applicable'"],
   ["enrichment_error", "TEXT"],
@@ -367,6 +431,9 @@ const syncRunMigrations = [
   ["heartbeat_at", "TEXT"],
   ["unchanged", "INTEGER NOT NULL DEFAULT 0"],
   ["news_updated", "INTEGER NOT NULL DEFAULT 0"],
+  ["news_found", "INTEGER NOT NULL DEFAULT 0"],
+  ["news_pending", "INTEGER NOT NULL DEFAULT 0"],
+  ["news_failed", "INTEGER NOT NULL DEFAULT 0"],
   ["mode", "TEXT NOT NULL DEFAULT 'daily'"],
   ["trigger_source", "TEXT NOT NULL DEFAULT 'manual'"],
 ] as const;
@@ -446,6 +513,7 @@ function mapLegislativeItem(row: LegislativeRow | undefined): LegislativeItem | 
     lastSeenAt: row.last_seen_at,
     updatedAt: row.updated_at,
     published: Boolean(row.published),
+    featured: Boolean(row.featured),
     enrichmentStatus: row.enrichment_status,
     enrichmentError: row.enrichment_error,
     enrichmentAttempts: row.enrichment_attempts,
@@ -472,9 +540,29 @@ function mapSyncRun(row: SyncRunRow | undefined): CamaraSyncRun | null {
     unchanged: row.unchanged,
     newsInserted: row.news_inserted,
     newsUpdated: row.news_updated,
+    newsFound: row.news_found,
+    newsPending: row.news_pending,
+    newsFailed: row.news_failed,
     mode: row.mode,
     triggerSource: row.trigger_source,
     error: row.error,
+  };
+}
+
+function mapOfficialNewsQueueItem(row: OfficialNewsQueueRow): OfficialNewsQueueItem {
+  return {
+    sourceId: row.source_id,
+    sourceUrl: row.source_url,
+    title: row.title,
+    excerpt: row.excerpt,
+    imageUrl: row.image_url,
+    publishedAt: row.published_at,
+    status: row.status,
+    attempts: row.attempts,
+    lastError: row.last_error,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    lastAttemptAt: row.last_attempt_at,
   };
 }
 
@@ -753,7 +841,7 @@ export function listLegislativeItems(options: {
   const rows = db.prepare(
     `SELECT * FROM legislative_items
      WHERE ${clauses.join(" AND ")}
-     ORDER BY occurred_at DESC, id DESC
+     ORDER BY featured DESC, occurred_at DESC, id DESC
      LIMIT ? OFFSET ?`,
   ).all(...values) as LegislativeRow[];
   return rows.map((row) => mapLegislativeItem(row) as LegislativeItem);
@@ -871,7 +959,7 @@ export function listAdminLegislativeItems(options: {
   const rows = db.prepare(`
     SELECT * FROM legislative_items
     WHERE ${clauses.join(" AND ")}
-    ORDER BY occurred_at DESC, id DESC
+    ORDER BY featured DESC, occurred_at DESC, id DESC
     LIMIT ? OFFSET ?
   `).all(...values) as LegislativeRow[];
   return rows.map((row) => mapLegislativeItem(row) as LegislativeItem);
@@ -913,6 +1001,17 @@ export function updateLegislativeVisibility(id: number, published: boolean) {
     SET published = ?, auto_hidden = 0, updated_at = ?
     WHERE id = ? AND deleted = 0
   `).run(published ? 1 : 0, now, id);
+  if (!result.changes) return null;
+  return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
+}
+
+export function updateLegislativeFeatured(id: number, featured: boolean) {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE legislative_items
+    SET featured = ?, updated_at = ?
+    WHERE id = ? AND kind = 'project' AND deleted = 0
+  `).run(featured ? 1 : 0, now, id);
   if (!result.changes) return null;
   return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
 }
@@ -1016,6 +1115,95 @@ export function upsertLegislativeItem(input: LegislativeItemInput) {
   return changed ? "updated" as const : "unchanged" as const;
 }
 
+function officialNewsPublicationId(value: string) {
+  try {
+    return new URL(value).pathname.match(/\/(\d+)\/?$/)?.[1] ?? null;
+  } catch {
+    return value.match(/\/(\d+)\/?(?:#.*)?$/)?.[1] ?? null;
+  }
+}
+
+function findOfficialNewsPost(input: { sourceId: string; sourceUrl: string }) {
+  const publicationId = officialNewsPublicationId(input.sourceUrl) || input.sourceId.match(/(\d+)$/)?.[1];
+  if (!publicationId) {
+    return db.prepare("SELECT * FROM posts WHERE source_id = ? OR source_url = ? LIMIT 1")
+      .get(input.sourceId, input.sourceUrl) as PostRow | undefined;
+  }
+  return db.prepare(`
+    SELECT * FROM posts
+    WHERE source_id = ? OR source_url = ?
+       OR source_url LIKE ? OR source_url LIKE ?
+    LIMIT 1
+  `).get(input.sourceId, input.sourceUrl, `%/${publicationId}`, `%/${publicationId}#%`) as PostRow | undefined;
+}
+
+export function upsertOfficialNewsCandidate(input: OfficialNewsCandidate) {
+  const now = new Date().toISOString();
+  const alreadyPublished = Boolean(findOfficialNewsPost(input));
+  const existing = db.prepare("SELECT source_id FROM official_news_queue WHERE source_id = ?")
+    .get(input.sourceId) as { source_id: string } | undefined;
+  db.prepare(`
+    INSERT INTO official_news_queue
+      (source_id, source_url, title, excerpt, image_url, published_at, status, attempts,
+       last_error, first_seen_at, last_seen_at, last_attempt_at)
+    VALUES
+      (@sourceId, @sourceUrl, @title, @excerpt, @imageUrl, @publishedAt, @status, 0,
+       NULL, @now, @now, NULL)
+    ON CONFLICT(source_id) DO UPDATE SET
+      source_url = excluded.source_url,
+      title = excluded.title,
+      excerpt = COALESCE(excluded.excerpt, official_news_queue.excerpt),
+      image_url = COALESCE(excluded.image_url, official_news_queue.image_url),
+      published_at = excluded.published_at,
+      last_seen_at = excluded.last_seen_at,
+      status = CASE WHEN @alreadyPublished = 1 THEN 'complete' ELSE official_news_queue.status END,
+      last_error = CASE WHEN @alreadyPublished = 1 THEN NULL ELSE official_news_queue.last_error END
+  `).run({ ...input, status: alreadyPublished ? "complete" : "pending", alreadyPublished: alreadyPublished ? 1 : 0, now });
+  return existing ? "existing" as const : "inserted" as const;
+}
+
+export function listOfficialNewsCandidatesForEnrichment(limit = 50) {
+  const rows = db.prepare(`
+    SELECT * FROM official_news_queue
+    WHERE status <> 'complete'
+    ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, attempts ASC, published_at DESC
+    LIMIT ?
+  `).all(limit) as OfficialNewsQueueRow[];
+  return rows.map(mapOfficialNewsQueueItem);
+}
+
+export function markOfficialNewsCandidateComplete(sourceId: string) {
+  db.prepare(`
+    UPDATE official_news_queue
+    SET status = 'complete', attempts = attempts + 1, last_error = NULL, last_attempt_at = ?
+    WHERE source_id = ?
+  `).run(new Date().toISOString(), sourceId);
+}
+
+export function markOfficialNewsCandidateFailed(sourceId: string, error: string) {
+  db.prepare(`
+    UPDATE official_news_queue
+    SET status = 'failed', attempts = attempts + 1, last_error = ?, last_attempt_at = ?
+    WHERE source_id = ?
+  `).run(error.slice(0, 1000), new Date().toISOString(), sourceId);
+}
+
+export function getOfficialNewsQueueCounts(): OfficialNewsQueueCounts {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS total,
+      SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+    FROM official_news_queue
+  `).get() as { total: number; complete: number | null; pending: number | null; failed: number | null };
+  return {
+    total: row.total,
+    complete: row.complete ?? 0,
+    pending: row.pending ?? 0,
+    failed: row.failed ?? 0,
+  };
+}
+
 export function createOfficialNewsPost(input: {
   sourceId: string;
   sourceUrl: string;
@@ -1025,7 +1213,7 @@ export function createOfficialNewsPost(input: {
   coverImage: string | null;
   publishedAt: string;
 }) {
-  const existing = db.prepare("SELECT * FROM posts WHERE source_id = ?").get(input.sourceId) as PostRow | undefined;
+  const existing = findOfficialNewsPost(input);
   const now = new Date().toISOString();
   if (existing) {
     const coverImage = input.coverImage || existing.cover_image;
@@ -1037,8 +1225,8 @@ export function createOfficialNewsPost(input: {
     if (!changed) return "unchanged" as const;
     db.prepare(`
       UPDATE posts SET title = ?, excerpt = ?, content = ?, cover_image = ?, published_at = ?,
-        updated_at = ?, source_url = ? WHERE id = ?
-    `).run(input.title, excerpt, content, coverImage, input.publishedAt, now, input.sourceUrl, existing.id);
+        updated_at = ?, source_id = ?, source_url = ? WHERE id = ?
+    `).run(input.title, excerpt, content, coverImage, input.publishedAt, now, input.sourceId, input.sourceUrl, existing.id);
     return "updated" as const;
   }
   const slug = getUniqueSlug(input.title);
@@ -1053,7 +1241,7 @@ export function createOfficialNewsPost(input: {
   return "inserted" as const;
 }
 
-export function startCamaraSyncRun(mode: "daily" | "history" | "indications", triggerSource: "manual" | "scheduled") {
+export function startCamaraSyncRun(mode: "daily" | "history" | "indications" | "news", triggerSource: "manual" | "scheduled") {
   const acquire = db.transaction(() => {
     const now = new Date().toISOString();
     const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
@@ -1088,15 +1276,20 @@ export function finishCamaraSyncRun(id: number, result: {
   unchanged?: number;
   newsInserted?: number;
   newsUpdated?: number;
+  newsFound?: number;
+  newsPending?: number;
+  newsFailed?: number;
   error?: string | null;
 }) {
   db.prepare(`
     UPDATE camara_sync_runs SET finished_at = ?, status = ?, found = ?, inserted = ?, updated = ?,
-      unchanged = ?, news_inserted = ?, news_updated = ?, error = ? WHERE id = ?
+      unchanged = ?, news_inserted = ?, news_updated = ?, news_found = ?, news_pending = ?,
+      news_failed = ?, error = ? WHERE id = ?
   `).run(
     new Date().toISOString(), result.status, result.found ?? 0, result.inserted ?? 0,
     result.updated ?? 0, result.unchanged ?? 0, result.newsInserted ?? 0,
-    result.newsUpdated ?? 0, result.error ?? null, id,
+    result.newsUpdated ?? 0, result.newsFound ?? 0, result.newsPending ?? 0,
+    result.newsFailed ?? 0, result.error ?? null, id,
   );
 }
 

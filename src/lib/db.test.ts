@@ -70,6 +70,28 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   assert.equal(pending?.published, false);
   assert.equal(pending?.enrichmentStatus, "pending");
 
+  const project: LegislativeItemInput = {
+    ...base,
+    externalId: "test-project:1",
+    kind: "project",
+    type: "Projeto de Lei",
+    title: "Projeto relevante",
+    summary: "Projeto relevante para a cidade.",
+    publicSummary: "Projeto relevante para a cidade.",
+    status: "Em tramitação",
+    statusGroup: "processing",
+    neighborhood: null,
+    service: null,
+    fullText: null,
+    enrichmentStatus: "not_applicable",
+  };
+  assert.equal(database.upsertLegislativeItem(project), "inserted");
+  const storedProject = database.getLegislativeItemByExternalId(project.externalId)!;
+  assert.equal(database.updateLegislativeFeatured(storedProject.id, true)?.featured, true);
+  assert.equal(database.upsertLegislativeItem({ ...project, status: "Comissão de Justiça" }), "updated");
+  assert.equal(database.getLegislativeItemByExternalId(project.externalId)?.featured, true);
+  assert.equal(database.listLegislativeItems({ limit: 1 })[0]?.externalId, project.externalId);
+
   database.db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });

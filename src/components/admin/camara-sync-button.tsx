@@ -1,16 +1,16 @@
 "use client";
 
-import { ArchiveRestore, History, RefreshCw } from "lucide-react";
+import { ArchiveRestore, History, Newspaper, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export function CamaraSyncButton() {
   const router = useRouter();
-  const [loading, setLoading] = useState<"daily" | "history" | "indications" | null>(null);
+  const [loading, setLoading] = useState<"daily" | "history" | "indications" | "news" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
 
-  async function synchronize(mode: "daily" | "history" | "indications") {
+  async function synchronize(mode: "daily" | "history" | "indications" | "news") {
     setLoading(mode);
     setMessage("");
     setError(false);
@@ -22,20 +22,23 @@ export function CamaraSyncButton() {
       });
       const payload = await response.json() as {
         error?: string;
-        result?: { inserted: number; updated: number; unchanged: number; newsInserted: number; newsUpdated: number; newsPending: number; retitled: number; enriched: number; pending: number; failed: number; manualReview: number };
+        result?: { inserted: number; updated: number; unchanged: number; newsInserted: number; newsUpdated: number; newsFound: number; newsPending: number; newsFailed: number; newsComplete: number; retitled: number; enriched: number; pending: number; failed: number; manualReview: number };
       };
       if (!response.ok || !payload.result) throw new Error(payload.error || "Não foi possível sincronizar.");
       const successMessage = mode === "history"
         ? `${payload.result.inserted} leis históricas novas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
         : mode === "indications"
           ? `${payload.result.inserted} indicações recuperadas, ${payload.result.updated} atualizadas, ${payload.result.enriched} completas, ${payload.result.pending} pendentes, ${payload.result.failed} com falha e ${payload.result.manualReview} para revisão.`
+          : mode === "news"
+            ? `${payload.result.newsFound} matérias oficiais localizadas, ${payload.result.newsInserted} importadas, ${payload.result.newsUpdated} atualizadas e ${payload.result.newsComplete} concluídas no total.`
           : `${payload.result.inserted} novos registros, ${payload.result.updated} atualizados, ${payload.result.unchanged} preservados, ${payload.result.retitled} títulos simplificados, ${payload.result.newsInserted} novas matérias e ${payload.result.newsUpdated} matérias enriquecidas.`;
       const indicationPending = payload.result.pending + payload.result.failed + payload.result.manualReview;
-      const pendingMessage = payload.result.newsPending
-        ? ` ${payload.result.newsPending} ${payload.result.newsPending === 1 ? "matéria ficou pendente" : "matérias ficaram pendentes"} de texto ou imagem; tente sincronizar novamente em alguns minutos.`
+      const newsWaiting = payload.result.newsPending + payload.result.newsFailed;
+      const pendingMessage = newsWaiting
+        ? ` A fila possui ${payload.result.newsPending} pendentes e ${payload.result.newsFailed} com falha; elas continuarão disponíveis para novas tentativas.`
         : "";
       const indicationMessage = indicationPending ? ` ${indicationPending} indicações aguardam enriquecimento ou revisão no painel.` : "";
-      setError(payload.result.newsPending > 0 || indicationPending > 0);
+      setError(newsWaiting > 0 || indicationPending > 0);
       setMessage(`${successMessage}${pendingMessage}${indicationMessage}`);
       router.refresh();
     } catch (caught) {
@@ -56,6 +59,10 @@ export function CamaraSyncButton() {
         <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("history")} disabled={Boolean(loading)}>
           <History size={18} className={loading === "history" ? "spin" : undefined} />
           {loading === "history" ? "Importando histórico..." : "Importar histórico de leis"}
+        </button>
+        <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("news")} disabled={Boolean(loading)}>
+          <Newspaper size={18} className={loading === "news" ? "spin" : undefined} />
+          {loading === "news" ? "Importando notícias..." : "Importar histórico de notícias"}
         </button>
         <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("indications")} disabled={Boolean(loading)}>
           <ArchiveRestore size={18} className={loading === "indications" ? "spin" : undefined} />

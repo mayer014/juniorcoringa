@@ -91,6 +91,7 @@ export type LegislativeItem = {
   lastSeenAt: string;
   updatedAt: string;
   published: boolean;
+  featured: boolean;
   enrichmentStatus: LegislativeEnrichmentStatus;
   enrichmentError: string | null;
   enrichmentAttempts: number;
@@ -104,7 +105,7 @@ export type LegislativeItem = {
 };
 
 export type LegislativeItemInput = Omit<LegislativeItem,
-  "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt" | "published" |
+  "id" | "firstSeenAt" | "lastSeenAt" | "updatedAt" | "published" | "featured" |
   "enrichmentAttempts" | "lastEnrichmentAt" | "titleOverride" | "summaryOverride" |
   "serviceOverride" | "locationOverride" | "neighborhoodOverride" | "referenceOverride"
 > & {
@@ -134,7 +135,37 @@ export type CamaraSyncRun = {
   unchanged: number;
   newsInserted: number;
   newsUpdated: number;
-  mode: "daily" | "history" | "indications";
+  newsFound: number;
+  newsPending: number;
+  newsFailed: number;
+  mode: "daily" | "history" | "indications" | "news";
   triggerSource: "manual" | "scheduled";
   error: string | null;
+};
+
+export type OfficialNewsQueueStatus = "pending" | "complete" | "failed";
+
+export type OfficialNewsCandidate = {
+  sourceId: string;
+  sourceUrl: string;
+  title: string;
+  excerpt: string | null;
+  imageUrl: string | null;
+  publishedAt: string;
+};
+
+export type OfficialNewsQueueItem = OfficialNewsCandidate & {
+  status: OfficialNewsQueueStatus;
+  attempts: number;
+  lastError: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastAttemptAt: string | null;
+};
+
+export type OfficialNewsQueueCounts = {
+  total: number;
+  complete: number;
+  pending: number;
+  failed: number;
 };

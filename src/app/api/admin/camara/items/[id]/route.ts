@@ -1,7 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { deleteLegislativeItem, updateLegislativeReview, updateLegislativeVisibility } from "@/lib/db";
+import { deleteLegislativeItem, updateLegislativeFeatured, updateLegislativeReview, updateLegislativeVisibility } from "@/lib/db";
 import { isSameOrigin, validateLegislativeReviewInput } from "@/lib/validation";
 
 type Context = { params: Promise<{ id: string }> };
@@ -20,8 +20,9 @@ export async function PATCH(request: Request, { params }: Context) {
   const id = Number.parseInt(rawId, 10);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!Number.isFinite(id) || !body) return NextResponse.json({ error: "Dados inválidos." }, { status: 400 });
-  const item = typeof body.published === "boolean"
-    ? updateLegislativeVisibility(id, body.published)
+  const item = typeof body.featured === "boolean"
+    ? updateLegislativeFeatured(id, body.featured)
+    : typeof body.published === "boolean" ? updateLegislativeVisibility(id, body.published)
     : (() => {
         const parsed = validateLegislativeReviewInput(body);
         if (!parsed.data) return parsed;
