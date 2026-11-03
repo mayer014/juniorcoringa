@@ -47,7 +47,6 @@ const NEWS_DETAILS_RETRY_DELAYS_MS = [0, 1_500, 4_000] as const;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
 const PDF_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_BACKFILL_LIMIT ?? "250", 10);
 const NEWS_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_DETAILS_LIMIT ?? "6", 10);
-const NEWS_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_BACKFILL_LIMIT ?? "1", 10);
 const DATA_DIR = path.resolve(
   /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
 );
@@ -802,6 +801,31 @@ async function enrichQueuedOfficialNews(limit: number) {
   };
 }
 
+function publishOfficialNewsArchive(candidates: OfficialNewsCandidate[]) {
+  const counts = { inserted: 0, updated: 0, unchanged: 0, failed: 0 };
+  for (const candidate of candidates) {
+    try {
+      const result = createOfficialNewsPost({
+        sourceId: candidate.sourceId,
+        sourceUrl: candidate.sourceUrl,
+        title: candidate.title,
+        excerpt: candidate.excerpt || "Matéria publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa.",
+        content: `[Leia a matéria completa na Câmara Municipal](${candidate.sourceUrl})`,
+        coverImage: null,
+        publishedAt: candidate.publishedAt,
+      });
+      counts[result] += 1;
+      markOfficialNewsCandidateComplete(candidate.sourceId);
+    } catch (error) {
+      counts.failed += 1;
+      const reason = error instanceof Error ? error.message : "Não foi possível registrar a matéria oficial.";
+      markOfficialNewsCandidateFailed(candidate.sourceId, reason);
+      console.warn(`Não foi possível publicar a matéria histórica ${candidate.sourceUrl}:`, error);
+    }
+  }
+  return counts;
+}
+
 export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual"): Promise<CamaraSyncResult> {
   const runId = startCamaraSyncRun(mode, trigger);
   if (runId === null) throw new Error("Já existe uma sincronização da Câmara em andamento.");
@@ -820,7 +844,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       : mode === "indications"
         ? [[], await fetchLegislativeRows("Documento", "documento"), [] as OfficialNewsCandidate[]]
         : mode === "news"
-          ? [[], [], await discoverOfficialNews(true)]
+          ? [[], [], await fetchOfficialMemberNewsArchive()]
         : await Promise.all([
             fetchLegislativeRows("Ato", "projeto", currentYear),
             fetchLegislativeRows("Documento", "documento", currentYear),
@@ -860,10 +884,11 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     const counts = { inserted: 0, updated: 0, unchanged: 0 };
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
     for (const candidate of newsCandidates) upsertOfficialNewsCandidate(candidate);
-    const newsLimit = mode === "news" ? NEWS_BACKFILL_PER_RUN : NEWS_DETAILS_PER_RUN;
-    const newsCounts = mode === "daily" || mode === "news"
-      ? await enrichQueuedOfficialNews(Number.isFinite(newsLimit) ? Math.max(newsLimit, 0) : mode === "news" ? 100 : 6)
-      : { inserted: 0, updated: 0, unchanged: 0, failed: 0 };
+    const newsCounts = mode === "news"
+      ? publishOfficialNewsArchive(newsCandidates)
+      : mode === "daily"
+        ? await enrichQueuedOfficialNews(Number.isFinite(NEWS_DETAILS_PER_RUN) ? Math.max(NEWS_DETAILS_PER_RUN, 0) : 6)
+        : { inserted: 0, updated: 0, unchanged: 0, failed: 0 };
     const newsQueue = getOfficialNewsQueueCounts();
     const retitled = retitleStoredIndications();
     const result: CamaraSyncResult = {

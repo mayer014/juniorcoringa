@@ -91,6 +91,7 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   assert.equal(database.upsertLegislativeItem({ ...project, status: "Comissão de Justiça" }), "updated");
   assert.equal(database.getLegislativeItemByExternalId(project.externalId)?.featured, true);
   assert.equal(database.listLegislativeItems({ limit: 1 })[0]?.externalId, project.externalId);
+  assert.equal(database.updateLegislativeFeatured(inserted!.id, true)?.featured, true);
 
   const news = {
     sourceId: "camara-news:40257",

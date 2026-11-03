@@ -1010,7 +1010,7 @@ export function updateLegislativeFeatured(id: number, featured: boolean) {
   const result = db.prepare(`
     UPDATE legislative_items
     SET featured = ?, updated_at = ?
-    WHERE id = ? AND kind = 'project' AND deleted = 0
+    WHERE id = ? AND deleted = 0
   `).run(featured ? 1 : 0, now, id);
   if (!result.changes) return null;
   return mapLegislativeItem(db.prepare("SELECT * FROM legislative_items WHERE id = ?").get(id) as LegislativeRow | undefined);
