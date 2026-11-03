@@ -38,7 +38,7 @@ export function parseOfficialMemberNewsArchive(
     const sourceUrl = new URL(he.decode(match[1]), archiveUrl).toString().replace(/#.*$/, "");
     if (!detailPattern.test(new URL(sourceUrl).pathname)) continue;
     const text = plainText(match[2]);
-    const parsed = text.match(/NOT[IÍ]CIAS\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})\s+(.+)/i);
+    const parsed = text.match(/NOT(?:I|\u00cd)CIAS\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})\s+(.+)/i);
     if (!parsed?.[3]) continue;
     const sourceId = stableOfficialNewsSourceId(sourceUrl);
     candidates.set(sourceId, {

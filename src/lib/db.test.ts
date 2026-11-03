@@ -92,6 +92,23 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   assert.equal(database.getLegislativeItemByExternalId(project.externalId)?.featured, true);
   assert.equal(database.listLegislativeItems({ limit: 1 })[0]?.externalId, project.externalId);
 
+  const news = {
+    sourceId: "camara-news:40257",
+    sourceUrl: "https://www.camara.ms.gov.br/camara/membros/show/14/noticias/1/40257",
+    title: "Instalação de postes nas Moreninhas",
+    excerpt: null,
+    imageUrl: null,
+    publishedAt: "2026-10-14T13:23:00-04:00",
+  };
+  assert.equal(database.upsertOfficialNewsCandidate(news), "inserted");
+  assert.equal(database.getOfficialNewsQueueCounts().pending, 1);
+  database.markOfficialNewsCandidateFailed(news.sourceId, "Imagem temporariamente indisponível");
+  const failedNews = database.listOfficialNewsCandidatesForEnrichment();
+  assert.equal(failedNews[0]?.status, "failed");
+  assert.equal(failedNews[0]?.attempts, 1);
+  database.markOfficialNewsCandidateComplete(news.sourceId);
+  assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
+
   database.db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });

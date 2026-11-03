@@ -735,6 +735,10 @@ function candidatesFromPublications(publications: OfficialPublication[]) {
 }
 
 async function discoverOfficialNews(requireArchive: boolean) {
+  const rssPromise = fetchOfficialNewsRss().catch((error) => {
+    console.warn("Não foi possível consultar o RSS de notícias da Câmara:", error);
+    return [] as OfficialNewsCandidate[];
+  });
   const archivePromise = fetchOfficialMemberNewsArchive().catch((error) => {
     if (requireArchive) throw error;
     console.warn("Não foi possível reconciliar o histórico de notícias do vereador:", error);
@@ -745,7 +749,7 @@ async function discoverOfficialNews(requireArchive: boolean) {
     return [] as OfficialPublication[];
   });
   const [rss, archive, publications] = await Promise.all([
-    fetchOfficialNewsRss(),
+    rssPromise,
     archivePromise,
     publicationsPromise,
   ]);

@@ -2,7 +2,7 @@ import { Activity, AlertTriangle, CheckCircle2, Clock3, FileCheck2, Landmark, Ne
 import Link from "next/link";
 import { CamaraSyncButton } from "@/components/admin/camara-sync-button";
 import { LegislativeManager } from "@/components/admin/legislative-manager";
-import { countAdminLegislativeItems, getDatabaseStorageStatus, getLatestCamaraSyncRun, getLegislativeCounts, getLegislativeQualityCounts, listAdminLegislativeItems } from "@/lib/db";
+import { countAdminLegislativeItems, getDatabaseStorageStatus, getLatestCamaraSyncRun, getLegislativeCounts, getLegislativeQualityCounts, getOfficialNewsQueueCounts, listAdminLegislativeItems } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import type { LegislativeKind } from "@/lib/types";
 
@@ -24,6 +24,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
   const filters = await searchParams;
   const counts = getLegislativeCounts();
   const qualityCounts = getLegislativeQualityCounts();
+  const newsQueue = getOfficialNewsQueueCounts();
   const latest = getLatestCamaraSyncRun();
   const storage = getDatabaseStorageStatus();
   const kind = filters.tipo === "projetos" ? "project" : filters.tipo === "indicacoes" ? "indication" : undefined;
@@ -47,7 +48,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
         <div>
           <span>Dados oficiais</span>
           <h1>Integração com a Câmara</h1>
-          <p>A rotina diária consulta apenas o ano atual. O histórico completo de leis possui uma importação separada e não busca indicações antigas.</p>
+          <p>A rotina diária atualiza os dados legislativos e reconcilia as notícias do vereador. Use os históricos separados para recuperar conteúdos antigos.</p>
         </div>
         <CamaraSyncButton />
       </div>
@@ -62,6 +63,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
       </div>
 
       {(qualityCounts.pending > 0 || qualityCounts.failed > 0 || qualityCounts.manualReview > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há indicações aguardando enriquecimento.</strong><span>{qualityCounts.pending} pendentes, {qualityCounts.failed} com falha e {qualityCounts.manualReview} para revisão manual. Os registros incompletos ficam ocultos até a correção.</span></div></div>}
+      {(newsQueue.pending > 0 || newsQueue.failed > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há matérias oficiais aguardando recuperação.</strong><span>{newsQueue.pending} pendentes e {newsQueue.failed} com falha. Use “Importar histórico de notícias” para tentar novamente; nenhuma matéria encontrada é descartada da fila.</span></div></div>}
 
       <section className="admin-list-card camara-status-card">
         <div className="admin-list-card__heading"><h2>Última sincronização</h2><Activity size={20} /></div>
@@ -69,7 +71,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
           <div className="camara-status-grid">
             <div><small>Início</small><strong>{formatDateTime(latest.startedAt)}</strong></div>
             <div><small>Origem</small><strong>{latest.triggerSource === "scheduled" ? "Automática (06:00)" : "Manual"}</strong></div>
-            <div><small>Rotina</small><strong>{latest.mode === "history" ? "Histórico de leis" : latest.mode === "indications" ? "Histórico de indicações" : "Atualização diária"}</strong></div>
+            <div><small>Rotina</small><strong>{latest.mode === "history" ? "Histórico de leis" : latest.mode === "indications" ? "Histórico de indicações" : latest.mode === "news" ? "Histórico de notícias" : "Atualização diária"}</strong></div>
             <div><small>Situação</small><strong className={`sync-status sync-status--${latest.status}`}>{latest.status === "success" ? "Concluída" : latest.status === "running" ? "Em andamento" : "Erro"}</strong></div>
             <div><small>Encontrados</small><strong>{latest.found}</strong></div>
             <div><small>Novos</small><strong>{latest.inserted}</strong></div>
@@ -77,6 +79,9 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
             <div><small>Preservados</small><strong>{latest.unchanged}</strong></div>
             <div><small>Matérias novas</small><strong>{latest.newsInserted}</strong></div>
             <div><small>Matérias enriquecidas</small><strong>{latest.newsUpdated}</strong></div>
+            <div><small>Matérias encontradas</small><strong>{latest.newsFound}</strong></div>
+            <div><small>Matérias pendentes</small><strong>{latest.newsPending}</strong></div>
+            <div><small>Falhas em matérias</small><strong>{latest.newsFailed}</strong></div>
             {latest.error && <p className="camara-status-error">{latest.error}</p>}
           </div>
         ) : (
