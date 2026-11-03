@@ -93,7 +93,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
         <div className="admin-list-card__heading"><h2>Registros da Câmara</h2><span>{totalManaged} encontrados · {PAGE_SIZE} por página</span></div>
         <form className="legislative-admin-filters" action="/admin/integracao">
           <label className="legislative-admin-search"><Search size={16} /><input name="q" defaultValue={filters.q ?? ""} placeholder="Buscar título, número, bairro ou lei" /></label>
-          <select name="tipo" defaultValue={filters.tipo ?? ""} aria-label="Filtrar por tipo"><option value="">Todos os tipos</option><option value="indicacoes">Indicações</option><option value="projetos">Projetos e leis — favoritar</option></select>
+          <select name="tipo" defaultValue={filters.tipo ?? ""} aria-label="Filtrar por tipo"><option value="">Todos os tipos — favoritar</option><option value="indicacoes">Indicações</option><option value="projetos">Projetos e leis</option></select>
           <select name="exibicao" defaultValue={filters.exibicao ?? ""} aria-label="Filtrar por exibição"><option value="">Visíveis e ocultos</option><option value="visiveis">Somente visíveis</option><option value="ocultos">Somente ocultos</option></select>
           <select name="qualidade" defaultValue={filters.qualidade ?? ""} aria-label="Filtrar por qualidade"><option value="">Todos os estados</option><option value="pending">Aguardando PDF</option><option value="failed">Falha no PDF</option><option value="manual_review">Revisão manual</option><option value="complete">Dados completos</option></select>
           <button className="admin-button admin-button--primary" type="submit">Filtrar</button>

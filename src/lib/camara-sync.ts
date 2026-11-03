@@ -40,13 +40,14 @@ const CAMARA_API_TOKEN = process.env.CAMARA_API_TOKEN || "";
 const CAMARA_NEWS_READER_URL = process.env.CAMARA_NEWS_READER_URL || "https://r.jina.ai/";
 const VEREADOR_NAME = "Junior Coringa";
 const REQUEST_TIMEOUT_MS = 90_000;
-const NEWS_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.CAMARA_NEWS_REQUEST_TIMEOUT_MS ?? "12_000", 10);
+const NEWS_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.CAMARA_NEWS_REQUEST_TIMEOUT_MS ?? "8_000", 10);
+const NEWS_FETCH_ATTEMPTS = Number.parseInt(process.env.CAMARA_NEWS_FETCH_ATTEMPTS ?? "1", 10);
 const PAGE_SIZE = 100;
 const NEWS_DETAILS_RETRY_DELAYS_MS = [0, 1_500, 4_000] as const;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
 const PDF_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_BACKFILL_LIMIT ?? "250", 10);
 const NEWS_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_DETAILS_LIMIT ?? "6", 10);
-const NEWS_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_BACKFILL_LIMIT ?? "2", 10);
+const NEWS_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_BACKFILL_LIMIT ?? "1", 10);
 const DATA_DIR = path.resolve(
   /* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"),
 );
@@ -138,9 +139,9 @@ function normalizeProjectStatus(status: string): LegislativeStatusGroup {
   return "processing";
 }
 
-async function fetchWithRetry(url: string | URL, init: RequestInit, context: string, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function fetchWithRetry(url: string | URL, init: RequestInit, context: string, timeoutMs = REQUEST_TIMEOUT_MS, maxAttempts = 3) {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       if (response.ok || response.status < 500) return response;
@@ -148,10 +149,14 @@ async function fetchWithRetry(url: string | URL, init: RequestInit, context: str
     } catch (error) {
       lastError = error;
     }
-    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750));
+    if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 750));
   }
   const reason = lastError instanceof Error ? lastError.message : "erro desconhecido";
-  throw new Error(`${context} falhou após 3 tentativas: ${reason}`);
+  throw new Error(`${context} falhou após ${maxAttempts} tentativa${maxAttempts === 1 ? "" : "s"}: ${reason}`);
+}
+
+function fetchNewsWithRetry(url: string | URL, init: RequestInit, context: string) {
+  return fetchWithRetry(url, init, context, NEWS_REQUEST_TIMEOUT_MS, Math.max(1, NEWS_FETCH_ATTEMPTS));
 }
 
 async function fetchDataTable(url: URL) {
@@ -416,10 +421,10 @@ function markdownExcerpt(markdown: string) {
 
 async function downloadOfficialCover(imageUrl: string) {
   if (!imageUrl) return null;
-  const response = await fetchWithRetry(imageUrl, {
+  const response = await fetchNewsWithRetry(imageUrl, {
     headers: { "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)" },
     cache: "no-store",
-  }, `Imagem ${imageUrl}`, NEWS_REQUEST_TIMEOUT_MS);
+  }, `Imagem ${imageUrl}`);
   if (!response.ok) throw new Error(`Imagem oficial respondeu HTTP ${response.status}.`);
   const contentType = response.headers.get("content-type")?.split(";")[0]?.toLowerCase() || "";
   const extensions: Record<string, string> = {
@@ -456,10 +461,10 @@ async function fetchOfficialPublications(allPages = false) {
     url.searchParams.set("call", "publicacoes");
     url.searchParams.set("tipo", "Noticias");
     url.searchParams.set("pagina", String(page));
-    const response = await fetchWithRetry(url, {
+    const response = await fetchNewsWithRetry(url, {
       headers: { Accept: "application/json" },
       cache: "no-store",
-    }, `API de notícias da Câmara (página ${page})`, NEWS_REQUEST_TIMEOUT_MS);
+    }, `API de notícias da Câmara (página ${page})`);
     if (!response.ok) throw new Error(`API de notícias respondeu HTTP ${response.status}.`);
     const payload = await response.json() as unknown;
     const entries = Array.isArray(payload) ? payload as OfficialPublication[] : [];
@@ -533,13 +538,13 @@ function extractReaderNews(markdown: string) {
 
 async function fetchOfficialNewsReader(canonicalUrl: string) {
   const baseUrl = CAMARA_NEWS_READER_URL.endsWith("/") ? CAMARA_NEWS_READER_URL : `${CAMARA_NEWS_READER_URL}/`;
-  const response = await fetchWithRetry(`${baseUrl}${canonicalUrl}`, {
+  const response = await fetchNewsWithRetry(`${baseUrl}${canonicalUrl}`, {
     headers: {
       Accept: "text/plain,text/markdown;q=0.9,*/*;q=0.1",
       "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
     },
     cache: "no-store",
-  }, "Leitor alternativo da matéria", NEWS_REQUEST_TIMEOUT_MS);
+  }, "Leitor alternativo da matéria");
   if (!response.ok) throw new Error(`Leitor alternativo respondeu HTTP ${response.status}.`);
   return extractReaderNews(await response.text());
 }
@@ -548,13 +553,13 @@ async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
   const pdfUrl = new URL("/legislarr/noticia_print_pdf.php", sourceUrl);
   pdfUrl.searchParams.set("item", publicationId);
   pdfUrl.searchParams.set("assinatura", "0");
-  const response = await fetchWithRetry(pdfUrl, {
+  const response = await fetchNewsWithRetry(pdfUrl, {
     headers: {
       Accept: "application/pdf,*/*",
       "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
     },
     cache: "no-store",
-  }, `PDF da matéria ${publicationId}`, NEWS_REQUEST_TIMEOUT_MS);
+  }, `PDF da matéria ${publicationId}`);
   if (!response.ok) throw new Error(`PDF da matéria respondeu HTTP ${response.status}.`);
   const contentType = response.headers.get("content-type")?.toLowerCase() || "";
   if (!contentType.includes("application/pdf")) {
@@ -585,13 +590,13 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string
       const documentUrl = new URL("/legislarr/documento_print_doc.php", sourceUrl);
       documentUrl.searchParams.set("documento_tipo", "noticia");
       documentUrl.searchParams.set("documento", publicationId);
-      const documentResponse = await fetchWithRetry(documentUrl, {
+      const documentResponse = await fetchNewsWithRetry(documentUrl, {
         headers: {
           Accept: "text/html,application/msword,*/*",
           "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
         },
         cache: "no-store",
-      }, `Documento da matéria ${publicationId}`, NEWS_REQUEST_TIMEOUT_MS);
+      }, `Documento da matéria ${publicationId}`);
       if (documentResponse.ok) {
         const documentHtml = await documentResponse.text();
         if (!isBotVerification(documentHtml)) {
@@ -613,14 +618,14 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string
   if (article.length < 80 || !imageUrl) {
     for (const candidateUrl of [...new Set([canonicalUrl, sourceUrl])]) {
       try {
-        const response = await fetchWithRetry(candidateUrl, {
+        const response = await fetchNewsWithRetry(candidateUrl, {
           headers: {
             Accept: "text/html,application/xhtml+xml",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
             "Accept-Language": "pt-BR,pt;q=0.9",
           },
           cache: "no-store",
-        }, `Matéria ${candidateUrl}`, NEWS_REQUEST_TIMEOUT_MS);
+        }, `Matéria ${candidateUrl}`);
         if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
         const html = await response.text();
         if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
@@ -673,10 +678,10 @@ async function fetchOfficialNewsDetailsWithRetry(sourceUrl: string, officialImag
 }
 
 async function fetchOfficialNewsRss() {
-  const response = await fetchWithRetry(CAMARA_RSS_URL, {
+  const response = await fetchNewsWithRetry(CAMARA_RSS_URL, {
     headers: { Accept: "application/rss+xml, application/xml, text/xml" },
     cache: "no-store",
-  }, "RSS da Câmara", NEWS_REQUEST_TIMEOUT_MS);
+  }, "RSS da Câmara");
   if (!response.ok) throw new Error(`RSS da Câmara respondeu HTTP ${response.status}.`);
   const parsed = new XMLParser({ ignoreAttributes: false }).parse(await response.text()) as { rss?: { channel?: { item?: unknown | unknown[] } } };
   const rawItems = parsed.rss?.channel?.item;
@@ -700,14 +705,14 @@ async function fetchOfficialNewsRss() {
 }
 
 async function fetchOfficialMemberNewsArchive() {
-  const response = await fetchWithRetry(CAMARA_MEMBER_NEWS_URL, {
+  const response = await fetchNewsWithRetry(CAMARA_MEMBER_NEWS_URL, {
     headers: {
       Accept: "text/html,application/xhtml+xml",
       "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
       "Accept-Language": "pt-BR,pt;q=0.9",
     },
     cache: "no-store",
-  }, "Histórico de notícias do vereador", NEWS_REQUEST_TIMEOUT_MS);
+  }, "Histórico de notícias do vereador");
   if (!response.ok) throw new Error(`Histórico de notícias respondeu HTTP ${response.status}.`);
   const html = await response.text();
   if (isBotVerification(html)) throw new Error("A Câmara bloqueou o histórico de notícias com Bot Verification.");
@@ -745,7 +750,7 @@ async function discoverOfficialNews(requireArchive: boolean) {
     console.warn("Não foi possível reconciliar o histórico de notícias do vereador:", error);
     return [] as OfficialNewsCandidate[];
   });
-  const publicationsPromise = fetchOfficialPublications(requireArchive).catch((error) => {
+  const publicationsPromise = fetchOfficialPublications(false).catch((error) => {
     console.warn("Não foi possível consultar a API oficial de notícias:", error);
     return [] as OfficialPublication[];
   });
