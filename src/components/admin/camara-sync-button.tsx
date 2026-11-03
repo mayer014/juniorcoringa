@@ -20,10 +20,19 @@ export function CamaraSyncButton() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
       });
-      const payload = await response.json() as {
+      const rawPayload = await response.text();
+      let payload: {
         error?: string;
         result?: { inserted: number; updated: number; unchanged: number; newsInserted: number; newsUpdated: number; newsFound: number; newsPending: number; newsFailed: number; newsComplete: number; retitled: number; enriched: number; pending: number; failed: number; manualReview: number };
       };
+      try {
+        payload = JSON.parse(rawPayload) as typeof payload;
+      } catch {
+        const isTimeout = response.status === 504 || /gateway timeout|timed out/i.test(rawPayload);
+        throw new Error(isTimeout
+          ? "A recuperação demorou além do limite do servidor. Ela agora é feita em lotes menores; atualize a página após o novo deploy e tente novamente."
+          : `O servidor respondeu de forma inesperada (HTTP ${response.status}). Tente novamente em alguns minutos.`);
+      }
       if (!response.ok || !payload.result) throw new Error(payload.error || "Não foi possível sincronizar.");
       const successMessage = mode === "history"
         ? `${payload.result.inserted} leis históricas novas, ${payload.result.updated} atualizadas e ${payload.result.retitled} títulos simplificados.`
