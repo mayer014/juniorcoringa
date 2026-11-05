@@ -1141,7 +1141,9 @@ function findOfficialNewsPost(input: { sourceId: string; sourceUrl: string }) {
 export function upsertOfficialNewsCandidate(input: OfficialNewsCandidate) {
   const now = new Date().toISOString();
   const post = findOfficialNewsPost(input);
-  const alreadyPublished = Boolean(post?.cover_image && hasFullOfficialNewsContent(post.content));
+  // Old imports used the institution's /news/noimage.jpg as a cover. Repair those on the next import.
+  const hasArticleCover = post?.cover_image && post.cover_image !== "/media/camara-f6b218f19d42e99c259ad268.jpg";
+  const alreadyPublished = Boolean(hasArticleCover && hasFullOfficialNewsContent(post?.content));
   const existing = db.prepare("SELECT source_id FROM official_news_queue WHERE source_id = ?")
     .get(input.sourceId) as { source_id: string } | undefined;
   db.prepare(`

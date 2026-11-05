@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeOfficialNewsCandidates, officialNewsDate, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+import { mergeOfficialNewsCandidates, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+
+test("usa a foto da matéria mesmo quando og:image anuncia o logotipo genérico", () => {
+  const generic = '<meta property="og:image" content="https://www.camara.ms.gov.br/news/noimage.jpg">';
+  const photo = '<a class="viewbox noticia_imagem"><img src="https://www.camara.ms.gov.br/news/2026/10/postes.png"></a>';
+  assert.equal(officialNewsImage(generic + photo), "https://www.camara.ms.gov.br/news/2026/10/postes.png");
+  assert.equal(officialNewsImage(generic), "");
+});
 
 test("preserva a data antiga da API em vez de trocar pela data de importação", () => {
   assert.equal(officialNewsDate("2026-07-02 12:44:00"), "2026-07-02T12:44:00-04:00");

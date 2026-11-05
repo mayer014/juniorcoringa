@@ -30,7 +30,7 @@ import {
   normalizeLegislativeText,
   sentenceCase,
 } from "@/lib/legislative-content";
-import { mergeOfficialNewsCandidates, officialNewsDate, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId, type OfficialNewsSource } from "@/lib/official-news";
+import { mergeOfficialNewsCandidates, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId, type OfficialNewsSource } from "@/lib/official-news";
 import type { LegislativeItemInput, LegislativeStatusGroup, OfficialNewsCandidate } from "@/lib/types";
 
 const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
@@ -370,13 +370,6 @@ async function mapWithConcurrency<T, R>(values: T[], concurrency: number, mapper
   return result;
 }
 
-function metaContent(html: string, property: string) {
-  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const direct = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`, "i"));
-  const reversed = html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`, "i"));
-  return he.decode(direct?.[1] || reversed?.[1] || "").trim();
-}
-
 function extractOfficialArticleBody(html: string) {
   const afterImage = html.match(
     /<a\b[^>]*class=["'][^"']*\bnoticia_imagem\b[^"']*["'][^>]*>[\s\S]*?<\/a>\s*([\s\S]*?)<div\b[^>]*class=["'][^"']*\bbotao_avisos\b/i,
@@ -501,7 +494,7 @@ function canonicalOfficialNewsUrl(sourceUrl: string, publishedAt: string) {
 }
 
 function extractOfficialNewsHtml(html: string) {
-  const imageUrl = metaContent(html, "og:image") || he.decode(html.match(/class=["'][^"']*noticia_imagem[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1] || "");
+  const imageUrl = officialNewsImage(html);
   const bodyHtml = extractOfficialArticleBody(html);
   const turndown = new TurndownService({ bulletListMarker: "-", emDelimiter: "_", strongDelimiter: "**" });
   const converted = bodyHtml ? turndown.turndown(bodyHtml).replace(/\n{3,}/g, "\n\n").trim() : "";

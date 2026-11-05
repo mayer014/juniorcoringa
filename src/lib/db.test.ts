@@ -125,6 +125,13 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   const storedNews = database.db.prepare("SELECT content FROM posts WHERE source_id = ?").get(news.sourceId) as { content: string };
   assert.equal(storedNews.content, fullContent);
   assert.equal(database.listAllPosts().filter((post) => post.title === news.title).length, 1);
+  database.db.prepare("UPDATE posts SET cover_image = ? WHERE source_id = ?")
+    .run("/media/camara-f6b218f19d42e99c259ad268.jpg", news.sourceId);
+  database.upsertOfficialNewsCandidate(news);
+  assert.equal(database.listOfficialNewsCandidatesForEnrichment(1, news.sourceId)[0]?.status, "pending");
+  assert.equal(database.createOfficialNewsPost(fullNews), "updated");
+  database.upsertOfficialNewsCandidate(news);
+  assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
 
   database.db.close();
   rmSync(dataDir, { recursive: true, force: true });

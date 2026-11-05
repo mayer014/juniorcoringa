@@ -158,6 +158,7 @@ try {
   for (const post of posts) {
     assert.ok(post.content.length > 150);
     assert.ok(post.cover_image?.startsWith("/media/"));
+    if (live) assert.notEqual(post.cover_image, "/media/camara-f6b218f19d42e99c259ad268.jpg", "A capa não pode ser o logotipo genérico da Câmara.");
     const page = await fetch(`${origin}/noticias/${post.slug}`);
     assert.equal(page.status, 200);
     const image = await fetch(`${origin}${post.cover_image}`);

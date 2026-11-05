@@ -44,6 +44,14 @@ export function hasFullOfficialNewsContent(content: string | null | undefined) {
   return body.length >= 80;
 }
 
+export function officialNewsImage(html: string) {
+  const articleImage = html.match(/class=["'][^"']*\bnoticia_imagem\b[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)/i)?.[1];
+  const socialImage = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1]
+    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1];
+  const candidate = he.decode(articleImage || socialImage || "");
+  return /\/noimage\.[^/?#]+(?:[?#]|$)/i.test(candidate) ? "" : candidate;
+}
+
 function parseOfficialDate(date: string, time: string) {
   const [day, month, year] = date.split("/");
   return `${year}-${month}-${day}T${time}:00-04:00`;
