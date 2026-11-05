@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { hasFullOfficialNewsContent } from "@/lib/official-news";
 import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeEnrichmentStatus, LegislativeItem, LegislativeItemInput, LegislativeItemReviewInput, LegislativeKind, LegislativeStatusGroup, OfficialNewsCandidate, OfficialNewsQueueCounts, OfficialNewsQueueItem, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
 
 type PostRow = {
@@ -1139,7 +1140,8 @@ function findOfficialNewsPost(input: { sourceId: string; sourceUrl: string }) {
 
 export function upsertOfficialNewsCandidate(input: OfficialNewsCandidate) {
   const now = new Date().toISOString();
-  const alreadyPublished = Boolean(findOfficialNewsPost(input));
+  const post = findOfficialNewsPost(input);
+  const alreadyPublished = Boolean(post?.cover_image && hasFullOfficialNewsContent(post.content));
   const existing = db.prepare("SELECT source_id FROM official_news_queue WHERE source_id = ?")
     .get(input.sourceId) as { source_id: string } | undefined;
   db.prepare(`
@@ -1156,19 +1158,20 @@ export function upsertOfficialNewsCandidate(input: OfficialNewsCandidate) {
       image_url = COALESCE(excluded.image_url, official_news_queue.image_url),
       published_at = excluded.published_at,
       last_seen_at = excluded.last_seen_at,
-      status = CASE WHEN @alreadyPublished = 1 THEN 'complete' ELSE official_news_queue.status END,
+      status = CASE WHEN @alreadyPublished = 1 THEN 'complete'
+        WHEN official_news_queue.status = 'complete' THEN 'pending' ELSE official_news_queue.status END,
       last_error = CASE WHEN @alreadyPublished = 1 THEN NULL ELSE official_news_queue.last_error END
   `).run({ ...input, status: alreadyPublished ? "complete" : "pending", alreadyPublished: alreadyPublished ? 1 : 0, now });
   return existing ? "existing" as const : "inserted" as const;
 }
 
-export function listOfficialNewsCandidatesForEnrichment(limit = 50) {
+export function listOfficialNewsCandidatesForEnrichment(limit = 50, sourceId?: string) {
   const rows = db.prepare(`
     SELECT * FROM official_news_queue
-    WHERE status <> 'complete'
+    WHERE status <> 'complete' AND (? IS NULL OR source_id = ?)
     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, attempts ASC, published_at DESC
     LIMIT ?
-  `).all(limit) as OfficialNewsQueueRow[];
+  `).all(sourceId ?? null, sourceId ?? null, limit) as OfficialNewsQueueRow[];
   return rows.map(mapOfficialNewsQueueItem);
 }
 
@@ -1217,8 +1220,9 @@ export function createOfficialNewsPost(input: {
   const now = new Date().toISOString();
   if (existing) {
     const coverImage = input.coverImage || existing.cover_image;
-    const excerpt = input.excerpt || existing.excerpt;
-    const content = input.content || existing.content;
+    const hasFullContent = hasFullOfficialNewsContent(input.content);
+    const excerpt = hasFullContent ? input.excerpt || existing.excerpt : existing.excerpt;
+    const content = hasFullContent ? input.content! : existing.content;
     const changed = existing.title !== input.title || existing.excerpt !== excerpt ||
       existing.content !== content || existing.cover_image !== coverImage ||
       existing.published_at !== input.publishedAt;
@@ -1228,6 +1232,9 @@ export function createOfficialNewsPost(input: {
         updated_at = ?, source_id = ?, source_url = ? WHERE id = ?
     `).run(input.title, excerpt, content, coverImage, input.publishedAt, now, input.sourceId, input.sourceUrl, existing.id);
     return "updated" as const;
+  }
+  if (!hasFullOfficialNewsContent(input.content)) {
+    throw new Error("A matéria não foi publicada porque o texto completo ainda não está disponível.");
   }
   const slug = getUniqueSlug(input.title);
   const excerpt = input.excerpt || "Notícia publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa.";

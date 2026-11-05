@@ -47,6 +47,7 @@ Essa senha de desenvolvimento não funciona em produção.
 | `CAMARA_SYNC_SECRET` | segredo do endpoint interno de sincronização |
 | `CAMARA_PDF_DETAILS_LIMIT` | quantidade máxima de PDFs novos detalhados por execução |
 | `CAMARA_NEWS_READER_URL` | leitor alternativo usado somente quando a Câmara bloqueia o corpo de uma matéria |
+| `CAMARA_NEWS_REQUEST_TIMEOUT_MS` | prazo por consulta de notícias, em milissegundos; padrão `8000` (aceita `8_000`), entre 1000 e 15000 |
 | `TZ` | fuso da aplicação; use `America/Cuiaba` |
 
 Quando `ADMIN_PASSWORD_HASH` estiver definido, ele tem prioridade sobre `ADMIN_PASSWORD`.
@@ -54,6 +55,14 @@ Quando `ADMIN_PASSWORD_HASH` estiver definido, ele tem prioridade sobre `ADMIN_P
 ## EasyPanel
 
 As instruções de implantação estão em [DEPLOY-EASYPANEL.md](./DEPLOY-EASYPANEL.md).
+
+## Recuperar notícias da Câmara
+
+Em `/admin/integracao`, clique em **Importar histórico de notícias**. A consulta salva o arquivo do vereador na fila e recupera automaticamente cada matéria em uma requisição separada, com progresso na tela. Cada matéria tem um limite total de 20 segundos. O botão **Pausar importação** encerra a sequência após a matéria atual; o próximo clique retoma o que falta.
+
+Somente matérias com texto completo e imagem são concluídas. Falhas ficam registradas para nova tentativa. A importação preserva textos e imagens existentes, evita duplicações pelo código oficial e recoloca antigos registros incompletos na fila de recuperação.
+
+Após `npm run build`, execute `node scripts/verify-camara-news.mjs` para testar login, importação, páginas públicas, duplicidade e falha da fonte via HTTP em um banco temporário. Acrescente `--live` para verificar o mesmo fluxo com a Câmara real e as três matérias reportadas como ausentes. Nenhum desses testes modifica o banco de produção.
 
 ## Backup
 

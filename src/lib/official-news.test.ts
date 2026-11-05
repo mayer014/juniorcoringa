@@ -7,7 +7,9 @@ test("lê o arquivo de notícias do vereador e preserva o identificador oficial"
     <a href="/camara/membros/show/14/noticias/1/40257">
       <span>NOTÍCIAS</span><time>14/10/2026 13:23</time>
       Junior Coringa acompanha instalação de postes nas Moreninhas
+      <div style="background-image:url(/news/postes_thumb.png);"></div>
     </a>
+    <a href="javascript:void(0)">Navegação</a>
     <a href="/camara/membros/show/15/noticias/1/99999">NOTÍCIAS 14/10/2026 13:23 Outra matéria</a>
   `;
   const items = parseOfficialMemberNewsArchive(archive, "https://www.camara.ms.gov.br/camara/membros/show/14/noticias/1");
@@ -16,6 +18,7 @@ test("lê o arquivo de notícias do vereador e preserva o identificador oficial"
   assert.equal(items[0].sourceId, "camara-news:40257");
   assert.equal(items[0].publishedAt, "2026-10-14T13:23:00-04:00");
   assert.match(items[0].title, /instalação de postes/i);
+  assert.equal(items[0].imageUrl, "https://www.camara.ms.gov.br/news/postes_thumb.png");
   assert.equal(stableOfficialNewsSourceId(items[0].sourceUrl), "camara-news:40257");
 });
 

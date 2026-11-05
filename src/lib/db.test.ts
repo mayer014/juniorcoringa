@@ -110,6 +110,22 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   database.markOfficialNewsCandidateComplete(news.sourceId);
   assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
 
+  // An old import marked a link-only article as complete. Discovery must repair that queue state.
+  database.upsertOfficialNewsCandidate(news);
+  assert.equal(database.getOfficialNewsQueueCounts().pending, 1);
+  assert.throws(() => database.createOfficialNewsPost({ ...news, content: "[Leia a matéria completa](https://camara.test/40257)", coverImage: null }), /texto completo/);
+  const fullContent = "O vereador acompanhou os trabalhos de instalação de postes para ampliar a iluminação pública na região das Moreninhas e ouviu as demandas dos moradores.";
+  const fullNews = { ...news, excerpt: "Iluminação pública nas Moreninhas.", content: fullContent, coverImage: "/media/postes.png" };
+  assert.equal(database.createOfficialNewsPost(fullNews), "inserted");
+  database.upsertOfficialNewsCandidate(news);
+  assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
+
+  // A different official URL for the same code must not duplicate or erase the text.
+  assert.equal(database.createOfficialNewsPost({ ...fullNews, sourceUrl: "https://www.camara.ms.gov.br/imprensa/noticias/Noticias/1/2026/40257", content: "[Leia a matéria completa](https://camara.test/40257)", excerpt: "Resumo genérico.", coverImage: null }), "unchanged");
+  const storedNews = database.db.prepare("SELECT content FROM posts WHERE source_id = ?").get(news.sourceId) as { content: string };
+  assert.equal(storedNews.content, fullContent);
+  assert.equal(database.listAllPosts().filter((post) => post.title === news.title).length, 1);
+
   database.db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });

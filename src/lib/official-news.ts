@@ -20,6 +20,15 @@ function plainText(html: string) {
     .trim();
 }
 
+export function hasFullOfficialNewsContent(content: string | null | undefined) {
+  const body = (content || "")
+    .replace(/\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/Notícia publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa\./gi, "")
+    .replace(/[*_#>`~\s-]+/g, " ")
+    .trim();
+  return body.length >= 80;
+}
+
 function parseOfficialDate(date: string, time: string) {
   const [day, month, year] = date.split("/");
   return `${year}-${month}-${day}T${time}:00-04:00`;
@@ -35,18 +44,34 @@ export function parseOfficialMemberNewsArchive(
   const candidates = new Map<string, OfficialNewsCandidate>();
 
   for (const match of html.matchAll(anchorPattern)) {
-    const sourceUrl = new URL(he.decode(match[1]), archiveUrl).toString().replace(/#.*$/, "");
+    let source: URL;
+    try {
+      source = new URL(he.decode(match[1]), archiveUrl);
+    } catch {
+      continue;
+    }
+    if (source.origin !== new URL(archiveUrl).origin) continue;
+    const sourceUrl = source.toString().replace(/#.*$/, "");
     if (!detailPattern.test(new URL(sourceUrl).pathname)) continue;
     const text = plainText(match[2]);
     const parsed = text.match(/NOT(?:I|\u00cd)CIAS\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})\s+(.+)/i);
     if (!parsed?.[3]) continue;
     const sourceId = stableOfficialNewsSourceId(sourceUrl);
+    const image = match[2].match(/background-image\s*:\s*url\(\s*["']?([^\s)"']+)/i)?.[1]
+      || match[2].match(/<img\b[^>]*src=["']([^"']+)/i)?.[1];
+    let imageUrl: string | null = null;
+    if (image) {
+      try {
+        const resolved = new URL(he.decode(image), archiveUrl);
+        if (["https:", "http:"].includes(resolved.protocol)) imageUrl = resolved.toString();
+      } catch { /* A malformed thumbnail must not discard the article. */ }
+    }
     candidates.set(sourceId, {
       sourceId,
       sourceUrl,
       title: parsed[3].trim(),
       excerpt: null,
-      imageUrl: null,
+      imageUrl,
       publishedAt: parseOfficialDate(parsed[1], parsed[2]),
     });
   }

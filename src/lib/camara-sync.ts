@@ -6,6 +6,7 @@ import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import * as he from "he";
 import TurndownService from "turndown";
+import { fetchCamaraWithRetry as fetchWithRetry, newsRequestTimeout } from "@/lib/camara-request";
 import {
   createOfficialNewsPost,
   finishCamaraSyncRun,
@@ -39,11 +40,9 @@ const CAMARA_API_URL = process.env.CAMARA_API_URL || "https://www.camara.ms.gov.
 const CAMARA_API_TOKEN = process.env.CAMARA_API_TOKEN || "";
 const CAMARA_NEWS_READER_URL = process.env.CAMARA_NEWS_READER_URL || "https://r.jina.ai/";
 const VEREADOR_NAME = "Junior Coringa";
-const REQUEST_TIMEOUT_MS = 90_000;
-const NEWS_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.CAMARA_NEWS_REQUEST_TIMEOUT_MS ?? "8_000", 10);
-const NEWS_FETCH_ATTEMPTS = Number.parseInt(process.env.CAMARA_NEWS_FETCH_ATTEMPTS ?? "1", 10);
+const NEWS_REQUEST_TIMEOUT_MS = newsRequestTimeout(process.env.CAMARA_NEWS_REQUEST_TIMEOUT_MS);
+const NEWS_ITEM_BUDGET_MS = 20_000;
 const PAGE_SIZE = 100;
-const NEWS_DETAILS_RETRY_DELAYS_MS = [0, 1_500, 4_000] as const;
 const PDF_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_DETAILS_LIMIT ?? "50", 10);
 const PDF_BACKFILL_PER_RUN = Number.parseInt(process.env.CAMARA_PDF_BACKFILL_LIMIT ?? "250", 10);
 const NEWS_DETAILS_PER_RUN = Number.parseInt(process.env.CAMARA_NEWS_DETAILS_LIMIT ?? "6", 10);
@@ -78,6 +77,8 @@ export type CamaraSyncResult = {
   newsPending: number;
   newsFailed: number;
   newsComplete: number;
+  newsQueueIds?: string[];
+  newsErrors?: string[];
   projects: number;
   indications: number;
   pdfDetails: number;
@@ -90,6 +91,7 @@ export type CamaraSyncResult = {
 
 export type CamaraSyncMode = "daily" | "history" | "indications" | "news";
 export type CamaraSyncTrigger = "manual" | "scheduled";
+export type CamaraNewsOptions = { phase?: "discover" | "enrich"; sourceId?: string };
 
 function normalizeText(value: unknown) {
   return normalizeLegislativeText(value);
@@ -138,24 +140,9 @@ function normalizeProjectStatus(status: string): LegislativeStatusGroup {
   return "processing";
 }
 
-async function fetchWithRetry(url: string | URL, init: RequestInit, context: string, timeoutMs = REQUEST_TIMEOUT_MS, maxAttempts = 3) {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-      if (response.ok || response.status < 500) return response;
-      lastError = new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-    if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 750));
-  }
-  const reason = lastError instanceof Error ? lastError.message : "erro desconhecido";
-  throw new Error(`${context} falhou após ${maxAttempts} tentativa${maxAttempts === 1 ? "" : "s"}: ${reason}`);
-}
-
 function fetchNewsWithRetry(url: string | URL, init: RequestInit, context: string) {
-  return fetchWithRetry(url, init, context, NEWS_REQUEST_TIMEOUT_MS, Math.max(1, NEWS_FETCH_ATTEMPTS));
+  // The durable queue retries failures in a later run; each HTTP request has a fixed budget.
+  return fetchWithRetry(url, init, context, NEWS_REQUEST_TIMEOUT_MS, 1);
 }
 
 async function fetchDataTable(url: URL) {
@@ -418,9 +405,10 @@ function markdownExcerpt(markdown: string) {
   return concise(text, 300);
 }
 
-async function downloadOfficialCover(imageUrl: string) {
+async function downloadOfficialCover(imageUrl: string, signal?: AbortSignal) {
   if (!imageUrl) return null;
   const response = await fetchNewsWithRetry(imageUrl, {
+    signal,
     headers: { "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)" },
     cache: "no-store",
   }, `Imagem ${imageUrl}`);
@@ -535,9 +523,10 @@ function extractReaderNews(markdown: string) {
   return { article, imageUrl };
 }
 
-async function fetchOfficialNewsReader(canonicalUrl: string) {
+async function fetchOfficialNewsReader(canonicalUrl: string, signal: AbortSignal) {
   const baseUrl = CAMARA_NEWS_READER_URL.endsWith("/") ? CAMARA_NEWS_READER_URL : `${CAMARA_NEWS_READER_URL}/`;
   const response = await fetchNewsWithRetry(`${baseUrl}${canonicalUrl}`, {
+    signal,
     headers: {
       Accept: "text/plain,text/markdown;q=0.9,*/*;q=0.1",
       "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
@@ -548,11 +537,12 @@ async function fetchOfficialNewsReader(canonicalUrl: string) {
   return extractReaderNews(await response.text());
 }
 
-async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
+async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string, signal: AbortSignal) {
   const pdfUrl = new URL("/legislarr/noticia_print_pdf.php", sourceUrl);
   pdfUrl.searchParams.set("item", publicationId);
   pdfUrl.searchParams.set("assinatura", "0");
   const response = await fetchNewsWithRetry(pdfUrl, {
+    signal,
     headers: {
       Accept: "application/pdf,*/*",
       "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
@@ -573,23 +563,54 @@ async function fetchOfficialNewsPdf(sourceUrl: string, publicationId: string) {
 }
 
 async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string | undefined, publishedAt: string) {
+  const signal = AbortSignal.timeout(NEWS_ITEM_BUDGET_MS);
   const publicationId = new URL(sourceUrl).pathname.match(/\/(\d+)\/?$/)?.[1];
   const canonicalUrl = canonicalOfficialNewsUrl(sourceUrl, publishedAt);
   let article = "";
-  if (publicationId) {
+  let imageUrl = officialImage || "";
+
+  // Try the article itself before PDF parsing. Most historical articles need only HTML + image.
+  for (const candidateUrl of [...new Set([sourceUrl, canonicalUrl])]) {
+    signal.throwIfAborted();
     try {
-      article = await fetchOfficialNewsPdf(sourceUrl, publicationId);
+      const response = await fetchNewsWithRetry(candidateUrl, {
+        signal,
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+        },
+        cache: "no-store",
+      }, "Texto da matéria oficial");
+      if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
+      const html = await response.text();
+      if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
+      const extracted = extractOfficialNewsHtml(html);
+      if (article.length < 80) article = extracted.article;
+      imageUrl = extracted.imageUrl || imageUrl;
+      if (article.length >= 80 && imageUrl) break;
+    } catch (error) {
+      console.warn(`Não foi possível ler a matéria ${publicationId} por HTML:`, error);
+    }
+  }
+
+  if (publicationId && article.length < 80) {
+    signal.throwIfAborted();
+    try {
+      article = await fetchOfficialNewsPdf(sourceUrl, publicationId, signal);
     } catch (error) {
       console.warn(`Não foi possível obter o PDF oficial ${publicationId}:`, error);
     }
   }
 
   if (publicationId && article.length < 80) {
+    signal.throwIfAborted();
     try {
       const documentUrl = new URL("/legislarr/documento_print_doc.php", sourceUrl);
       documentUrl.searchParams.set("documento_tipo", "noticia");
       documentUrl.searchParams.set("documento", publicationId);
       const documentResponse = await fetchNewsWithRetry(documentUrl, {
+        signal,
         headers: {
           Accept: "text/html,application/msword,*/*",
           "User-Agent": "JuniorCoringaMandato/1.0 (+https://juniorcoringa.com.br)",
@@ -608,72 +629,26 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string
     }
   }
 
-  let coverImage: string | null = null;
-  let imageUrl = officialImage || "";
-  if (imageUrl) {
-    coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString());
-  }
-
   if (article.length < 80 || !imageUrl) {
-    for (const candidateUrl of [...new Set([canonicalUrl, sourceUrl])]) {
-      try {
-        const response = await fetchNewsWithRetry(candidateUrl, {
-          headers: {
-            Accept: "text/html,application/xhtml+xml",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9",
-          },
-          cache: "no-store",
-        }, `Matéria ${candidateUrl}`);
-        if (!response.ok) throw new Error(`Matéria oficial respondeu HTTP ${response.status}.`);
-        const html = await response.text();
-        if (isBotVerification(html)) throw new Error("A Câmara bloqueou a consulta com Bot Verification.");
-        const extracted = extractOfficialNewsHtml(html);
-        article ||= extracted.article;
-        imageUrl ||= extracted.imageUrl;
-        if (imageUrl && !coverImage) coverImage = await downloadOfficialCover(new URL(imageUrl, candidateUrl).toString());
-        if (article.length >= 80 && imageUrl) break;
-      } catch (error) {
-        console.warn(`Não foi possível ler a matéria pela rota ${candidateUrl}:`, error);
-      }
-    }
-  }
-
-  if (article.length < 80 || !imageUrl) {
+    signal.throwIfAborted();
     try {
-      const reader = await fetchOfficialNewsReader(canonicalUrl);
-      article ||= reader.article;
+      const reader = await fetchOfficialNewsReader(canonicalUrl, signal);
+      if (article.length < 80) article = reader.article;
       imageUrl ||= reader.imageUrl;
-      if (imageUrl && !coverImage) coverImage = await downloadOfficialCover(new URL(imageUrl, canonicalUrl).toString());
     } catch (error) {
       console.warn(`Não foi possível ler a matéria pelo leitor alternativo ${canonicalUrl}:`, error);
     }
   }
 
+  signal.throwIfAborted();
   if (article.length < 80) throw new Error("O texto completo da matéria ainda não está disponível.");
-  if (imageUrl && !coverImage) throw new Error("A imagem da matéria ainda não pôde ser salva.");
+  if (!imageUrl) throw new Error("A imagem da matéria ainda não está disponível.");
+  const coverImage = await downloadOfficialCover(new URL(imageUrl, sourceUrl).toString(), signal);
   return {
     excerpt: markdownExcerpt(article),
     content: `${article}\n\n---\n\n[Fonte: Câmara Municipal de Campo Grande](${sourceUrl})`,
     coverImage,
   };
-}
-
-async function fetchOfficialNewsDetailsWithRetry(sourceUrl: string, officialImage: string | undefined, publishedAt: string) {
-  let lastError: unknown;
-  for (const [index, delayMs] of NEWS_DETAILS_RETRY_DELAYS_MS.entries()) {
-    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    try {
-      return await fetchOfficialNewsDetails(sourceUrl, officialImage, publishedAt);
-    } catch (error) {
-      lastError = error;
-      if (index < NEWS_DETAILS_RETRY_DELAYS_MS.length - 1) {
-        const reason = error instanceof Error ? error.message : "erro desconhecido";
-        console.warn(`Detalhes de ${sourceUrl} incompletos; nova tentativa será feita: ${reason}`);
-      }
-    }
-  }
-  throw lastError;
 }
 
 async function fetchOfficialNewsRss() {
@@ -770,11 +745,12 @@ async function discoverOfficialNews(requireArchive: boolean) {
   });
 }
 
-async function enrichQueuedOfficialNews(limit: number) {
-  const queued = listOfficialNewsCandidatesForEnrichment(limit);
+async function enrichQueuedOfficialNews(limit: number, sourceId?: string) {
+  const queued = listOfficialNewsCandidatesForEnrichment(limit, sourceId);
+  const errors: string[] = [];
   const results = await mapWithConcurrency(queued, 3, async (item) => {
     try {
-      const details = await fetchOfficialNewsDetailsWithRetry(item.sourceUrl, item.imageUrl || undefined, item.publishedAt);
+      const details = await fetchOfficialNewsDetails(item.sourceUrl, item.imageUrl || undefined, item.publishedAt);
       const result = createOfficialNewsPost({
         sourceId: item.sourceId,
         sourceUrl: item.sourceUrl,
@@ -788,6 +764,7 @@ async function enrichQueuedOfficialNews(limit: number) {
       return result;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Não foi possível enriquecer a matéria oficial.";
+      errors.push(`${item.title}: ${reason}`);
       markOfficialNewsCandidateFailed(item.sourceId, reason);
       console.warn(`A matéria ${item.sourceUrl} permaneceu na fila de pendências:`, error);
       return "failed" as const;
@@ -798,35 +775,14 @@ async function enrichQueuedOfficialNews(limit: number) {
     updated: results.filter((result) => result === "updated").length,
     unchanged: results.filter((result) => result === "unchanged").length,
     failed: results.filter((result) => result === "failed").length,
+    errors,
   };
 }
 
-function publishOfficialNewsArchive(candidates: OfficialNewsCandidate[]) {
-  const counts = { inserted: 0, updated: 0, unchanged: 0, failed: 0 };
-  for (const candidate of candidates) {
-    try {
-      const result = createOfficialNewsPost({
-        sourceId: candidate.sourceId,
-        sourceUrl: candidate.sourceUrl,
-        title: candidate.title,
-        excerpt: candidate.excerpt || "Matéria publicada pela Câmara Municipal de Campo Grande sobre a atuação do vereador Junior Coringa.",
-        content: `[Leia a matéria completa na Câmara Municipal](${candidate.sourceUrl})`,
-        coverImage: null,
-        publishedAt: candidate.publishedAt,
-      });
-      counts[result] += 1;
-      markOfficialNewsCandidateComplete(candidate.sourceId);
-    } catch (error) {
-      counts.failed += 1;
-      const reason = error instanceof Error ? error.message : "Não foi possível registrar a matéria oficial.";
-      markOfficialNewsCandidateFailed(candidate.sourceId, reason);
-      console.warn(`Não foi possível publicar a matéria histórica ${candidate.sourceUrl}:`, error);
-    }
+export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual", newsOptions: CamaraNewsOptions = {}): Promise<CamaraSyncResult> {
+  if (mode === "news" && newsOptions.phase === "enrich" && !newsOptions.sourceId) {
+    throw new Error("Informe a matéria da fila que será recuperada.");
   }
-  return counts;
-}
-
-export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: CamaraSyncTrigger = "manual"): Promise<CamaraSyncResult> {
   const runId = startCamaraSyncRun(mode, trigger);
   if (runId === null) throw new Error("Já existe uma sincronização da Câmara em andamento.");
   const heartbeat = setInterval(() => {
@@ -844,7 +800,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       : mode === "indications"
         ? [[], await fetchLegislativeRows("Documento", "documento"), [] as OfficialNewsCandidate[]]
         : mode === "news"
-          ? [[], [], await fetchOfficialMemberNewsArchive()]
+          ? [[], [], newsOptions.phase === "enrich" ? [] as OfficialNewsCandidate[] : await fetchOfficialMemberNewsArchive()]
         : await Promise.all([
             fetchLegislativeRows("Ato", "projeto", currentYear),
             fetchLegislativeRows("Documento", "documento", currentYear),
@@ -884,13 +840,13 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     const counts = { inserted: 0, updated: 0, unchanged: 0 };
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
     for (const candidate of newsCandidates) upsertOfficialNewsCandidate(candidate);
-    const newsCounts = mode === "news"
-      ? publishOfficialNewsArchive(newsCandidates)
+    const newsCounts = mode === "news" && newsOptions.phase === "enrich"
+      ? await enrichQueuedOfficialNews(1, newsOptions.sourceId)
       : mode === "daily"
         ? await enrichQueuedOfficialNews(Number.isFinite(NEWS_DETAILS_PER_RUN) ? Math.max(NEWS_DETAILS_PER_RUN, 0) : 6)
-        : { inserted: 0, updated: 0, unchanged: 0, failed: 0 };
+        : { inserted: 0, updated: 0, unchanged: 0, failed: 0, errors: [] as string[] };
     const newsQueue = getOfficialNewsQueueCounts();
-    const retitled = retitleStoredIndications();
+    const retitled = mode === "news" ? 0 : retitleStoredIndications();
     const result: CamaraSyncResult = {
       mode,
       found: items.length,
@@ -903,6 +859,10 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       newsPending: newsQueue.pending,
       newsFailed: newsQueue.failed,
       newsComplete: newsQueue.complete,
+      newsQueueIds: mode === "news" && newsOptions.phase !== "enrich"
+        ? listOfficialNewsCandidatesForEnrichment(10_000).map((item) => item.sourceId)
+        : undefined,
+      newsErrors: newsCounts.errors,
       projects: projects.length,
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,
