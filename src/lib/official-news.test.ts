@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeOfficialNewsCandidates, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+import { mergeOfficialNewsCandidates, officialNewsDate, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+
+test("preserva a data antiga da API em vez de trocar pela data de importação", () => {
+  assert.equal(officialNewsDate("2026-07-02 12:44:00"), "2026-07-02T12:44:00-04:00");
+  assert.equal(officialNewsDate("02/07/2026 12:44"), "2026-07-02T12:44:00-04:00");
+  assert.throws(() => officialNewsDate("sem data"), /data válida/);
+});
 
 test("lê o arquivo de notícias do vereador e preserva o identificador oficial", () => {
   const archive = `

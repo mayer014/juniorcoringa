@@ -4,20 +4,40 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 
 const live = process.argv.includes("--live");
+const blockedArchive = process.argv.includes("--blocked-archive");
+const recoveryOnly = process.argv.includes("--recovery-only");
+const standalone = process.argv.includes("--standalone");
+const exportRecovery = process.argv.includes("--export-recovery");
+if (exportRecovery && !live) throw new Error("O acervo de recuperação só pode ser gerado com a fonte oficial real (--live).");
 const taskData = mkdtempSync(path.join(tmpdir(), "junior-camara-http-test-"));
 const ids = ["40257", "40215", "39428"];
 const article = "O vereador Junior Coringa acompanhou as demandas dos moradores e solicitou melhorias na iluminação pública. A iniciativa atende à comunidade das Moreninhas, com instalação de postes e reforço da segurança nas ruas do bairro.";
 let archiveUnavailable = false;
 const fixture = createServer((request, response) => {
-  if (archiveUnavailable) {
-    response.writeHead(502, { "Content-Type": "text/html" });
-    response.end("<!DOCTYPE html><h1>Upstream unavailable</h1>");
+  const url = new URL(request.url, "http://fixture.test");
+  if (archiveUnavailable || recoveryOnly || (blockedArchive && /^\/(?:camara|imprensa)\//.test(url.pathname))) {
+    response.writeHead(200, { "Content-Type": "text/html" });
+    response.end("<!DOCTYPE html><title>Bot Verification</title><form class='lsrecaptcha-form'></form>");
+    return;
+  }
+  if (url.pathname === "/api") {
+    const page = Number(url.searchParams.get("pagina"));
+    const pageIds = page === 1 ? [ids[0]] : page === 2 ? ids.slice(1) : [];
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(pageIds.map((id) => ({ titulo: `Junior Coringa: matéria ${id}`,
+      data: "2026-10-14 13:23:00", resumo: "", imagem: `http://127.0.0.1:${fixturePort}/news/capa.png`,
+      link: `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1/${id}` }))));
+    return;
+  }
+  if (url.pathname === "/rss") {
+    response.setHeader("Content-Type", "application/rss+xml");
+    response.end(`<rss><channel><item><title>Junior Coringa: matéria ${ids[0]}</title><link>http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1/${ids[0]}</link><pubDate>Wed, 14 Oct 2026 13:23:00 -0400</pubDate></item></channel></rss>`);
     return;
   }
   if (request.url?.startsWith("/news/")) {
@@ -44,17 +64,23 @@ await new Promise((resolve) => portProbe.close(resolve));
 const origin = `http://127.0.0.1:${appPort}`;
 const email = "news-check@example.test";
 const password = randomBytes(24).toString("hex");
-const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-H", "127.0.0.1", "-p", String(appPort)], {
+const serverArgs = standalone ? [".next/standalone/server.js"] : ["node_modules/next/dist/bin/next", "start", "-H", "127.0.0.1", "-p", String(appPort)];
+const child = spawn(process.execPath, serverArgs, {
   env: {
     ...process.env,
     NODE_ENV: "production",
     NEXT_TELEMETRY_DISABLED: "1",
+    PORT: String(appPort),
+    HOSTNAME: "127.0.0.1",
     DATA_DIR: taskData,
     ADMIN_EMAIL: email,
     ADMIN_PASSWORD: password,
     ADMIN_PASSWORD_HASH: "",
     SESSION_SECRET: randomBytes(32).toString("hex"),
-    CAMARA_API_TOKEN: "",
+    CAMARA_API_TOKEN: live ? "" : "fixture-key",
+    CAMARA_API_URL: `http://127.0.0.1:${fixturePort}/api`,
+    CAMARA_RSS_URL: live ? "https://www.camara.ms.gov.br/jsonweb/web-rss.php" : `http://127.0.0.1:${fixturePort}/rss`,
+    CAMARA_NEWS_RECOVERY_DIR: recoveryOnly ? path.resolve(standalone ? ".next/standalone/seed/camara-news-recovery" : "seed/camara-news-recovery") : path.join(taskData, "no-recovery"),
     CAMARA_MEMBER_NEWS_URL: live
       ? "https://www.camara.ms.gov.br/camara/membros/show/14/noticias/1"
       : `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1`,
@@ -99,18 +125,36 @@ try {
     return JSON.parse(text);
   }
   const started = Date.now();
-  const { result: discovered } = await synchronize({ phase: "discover" });
+  async function discover() {
+    let { result } = await synchronize({ phase: "discover" });
+    const firstSources = result.newsSources;
+    let pages = 1;
+    while (result.newsNextApiPage) {
+      assert.ok(pages < 200);
+      ({ result } = await synchronize({ phase: "discover", apiPage: result.newsNextApiPage, previousApiPageKey: result.newsApiPageKey }));
+      pages += 1;
+    }
+    return { ...result, firstSources, pages };
+  }
+  const discovered = await discover();
   console.log(JSON.stringify({ phase: "discovery", live, found: discovered.newsFound, queued: discovered.newsQueueIds.length, milliseconds: Date.now() - started }));
+  if (blockedArchive && !recoveryOnly) {
+    assert.equal(discovered.pages, 3);
+    assert.equal(discovered.newsHistoryComplete, true);
+    assert.ok(discovered.firstSources.some((entry) => entry.source === "archive" && entry.status === "unavailable"));
+  }
+  if (recoveryOnly) assert.ok(discovered.firstSources.some((entry) => entry.source === "recovery" && entry.found === 25));
   for (const id of ids) assert.ok(discovered.newsQueueIds.includes(`camara-news:${id}`), `Missing official article ${id}`);
-  for (const id of ids) {
+  const selectedIds = exportRecovery || recoveryOnly ? discovered.newsQueueIds.map((id) => id.replace("camara-news:", "")) : ids;
+  for (const id of selectedIds) {
     const began = Date.now();
     const { result } = await synchronize({ phase: "enrich", sourceId: `camara-news:${id}` });
     assert.equal(result.newsInserted, 1, JSON.stringify(result.newsErrors));
     console.log(JSON.stringify({ phase: "article", id, inserted: result.newsInserted, milliseconds: Date.now() - began }));
   }
   database = new Database(path.join(taskData, "junior-coringa.sqlite"), { readonly: true });
-  const posts = database.prepare("SELECT slug, content, cover_image FROM posts").all();
-  assert.equal(posts.length, ids.length);
+  const posts = database.prepare("SELECT * FROM posts").all();
+  assert.equal(posts.length, selectedIds.length);
   for (const post of posts) {
     assert.ok(post.content.length > 150);
     assert.ok(post.cover_image?.startsWith("/media/"));
@@ -119,16 +163,31 @@ try {
     const image = await fetch(`${origin}${post.cover_image}`);
     assert.equal(image.status, 200);
   }
-  const { result: again } = await synchronize({ phase: "discover" });
+  const again = await discover();
   for (const id of ids) assert.ok(!again.newsQueueIds.includes(`camara-news:${id}`), `Completed article queued again: ${id}`);
-  assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, ids.length);
+  assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, selectedIds.length);
+  if (exportRecovery) {
+    const directory = path.resolve("seed/camara-news-recovery");
+    mkdirSync(path.join(directory, "uploads"), { recursive: true });
+    const articles = posts.map((post) => {
+      const coverFile = path.basename(post.cover_image);
+      copyFileSync(path.join(taskData, "uploads", coverFile), path.join(directory, "uploads", coverFile));
+      const candidate = database.prepare("SELECT image_url FROM official_news_queue WHERE source_id = ?").get(post.source_id);
+      return { sourceId: post.source_id, sourceUrl: post.source_url, title: post.title, excerpt: post.excerpt, content: post.content,
+        imageUrl: candidate?.image_url || null, publishedAt: post.published_at, coverFile };
+    });
+    writeFileSync(path.join(directory, "archive.json"), JSON.stringify({ retrievedAt: new Date().toISOString(),
+      sourceUrl: "https://www.camara.ms.gov.br/camara/membros/show/14/noticias/1", articles }, null, 2) + "\n");
+    console.log(JSON.stringify({ exportedRecoveryArticles: articles.length, directory }));
+  }
   if (!live) {
     archiveUnavailable = true;
-    const failed = await synchronize({ phase: "discover" }, 503);
-    assert.match(failed.error, /HTTP 502/);
-    assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, ids.length);
+    const failed = await synchronize({ phase: "discover" });
+    assert.equal(failed.result.newsHistoryComplete, false);
+    assert.ok(failed.result.newsSources.some((entry) => entry.status === "unavailable" && /Bot Verification/.test(entry.message)));
+    assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, selectedIds.length);
   }
-  console.log("PASS: authenticated HTTP import, full text, saved images, public pages, no duplicates, resumable queue" + (live ? " (real Câmara)." : ", JSON on upstream failure."));
+  console.log("PASS: authenticated HTTP import, full text, saved images, public pages, no duplicates, resumable queue" + (live ? " (real Câmara)." : `, blocked archive=${blockedArchive}, offline recovery=${recoveryOnly}.`));
 } catch (error) {
   console.error(error);
   console.error(logs);

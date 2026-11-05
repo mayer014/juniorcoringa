@@ -60,9 +60,15 @@ As instruções de implantação estão em [DEPLOY-EASYPANEL.md](./DEPLOY-EASYPA
 
 Em `/admin/integracao`, clique em **Importar histórico de notícias**. A consulta salva o arquivo do vereador na fila e recupera automaticamente cada matéria em uma requisição separada, com progresso na tela. Cada matéria tem um limite total de 20 segundos. O botão **Pausar importação** encerra a sequência após a matéria atual; o próximo clique retoma o que falta.
 
+A descoberta consulta de forma independente a página do vereador, o RSS, a API autenticada e o acervo local de recuperação. Se a página receber Bot Verification, a API percorre o histórico com uma página por requisição; uma página vazia encerra a busca. Páginas repetidas e o limite de 200 páginas interrompem a busca com indicação de cobertura parcial. O painel identifica as fontes utilizadas e as indisponíveis. Falha em uma fonte não descarta a fila nem impede as demais.
+
+`seed/camara-news-recovery/` contém 25 matérias oficiais verificadas em 05/11/2026, com texto, data, link da fonte e imagem. O Dockerfile inclui esse diretório na imagem. Ele permite recuperar essas matérias sem conexão do servidor com a Câmara e não é apresentado como um catálogo atualizado em tempo real. Para gerar uma nova versão a partir da fonte oficial acessível, use `node scripts/verify-camara-news.mjs --live --export-recovery` depois do build; revise e publique o acervo gerado junto com o código. A API/RSS continuam descobrindo matérias posteriores à cópia.
+
 Somente matérias com texto completo e imagem são concluídas. Falhas ficam registradas para nova tentativa. A importação preserva textos e imagens existentes, evita duplicações pelo código oficial e recoloca antigos registros incompletos na fila de recuperação.
 
 Após `npm run build`, execute `node scripts/verify-camara-news.mjs` para testar login, importação, páginas públicas, duplicidade e falha da fonte via HTTP em um banco temporário. Acrescente `--live` para verificar o mesmo fluxo com a Câmara real e as três matérias reportadas como ausentes. Nenhum desses testes modifica o banco de produção.
+
+Para simular o problema da VPS, execute `node scripts/verify-camara-news.mjs --blocked-archive` (página e HTML das matérias bloqueados, recuperação pela API e exportação oficial DOC) e `node scripts/verify-camara-news.mjs --recovery-only` (fontes externas indisponíveis, importação pelo acervo salvo). Ambos validam texto, imagem, página pública e ausência de duplicações.
 
 ## Backup
 

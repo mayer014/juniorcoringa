@@ -11,13 +11,20 @@ export async function POST(request: Request) {
   if (!isSameOrigin(request)) return NextResponse.json({ error: "Origem inválida." }, { status: 403 });
   if (!(await getSession())) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   try {
-    const body = await request.json().catch(() => null) as { mode?: unknown; phase?: unknown; sourceId?: unknown } | null;
+    const body = await request.json().catch(() => null) as { mode?: unknown; phase?: unknown; sourceId?: unknown; apiPage?: unknown; previousApiPageKey?: unknown } | null;
     const mode: CamaraSyncMode = body?.mode === "history"
       ? "history"
       : body?.mode === "indications"
         ? "indications"
         : body?.mode === "news" ? "news" : "daily";
     const newsOptions: CamaraNewsOptions = { phase: body?.phase === "enrich" ? "enrich" : "discover" };
+    if (mode === "news" && body?.apiPage !== undefined) {
+      if (typeof body.apiPage !== "number" || !Number.isInteger(body.apiPage) || body.apiPage < 1 || body.apiPage > 200) {
+        return NextResponse.json({ error: "Página inválida do histórico oficial." }, { status: 400 });
+      }
+      newsOptions.apiPage = body.apiPage;
+      if (typeof body.previousApiPageKey === "string" && /^[a-f0-9]{64}$/.test(body.previousApiPageKey)) newsOptions.previousApiPageKey = body.previousApiPageKey;
+    }
     if (mode === "news" && newsOptions.phase === "enrich") {
       if (typeof body?.sourceId !== "string" || !/^camara-news:\d+$/.test(body.sourceId)) {
         return NextResponse.json({ error: "Matéria inválida para recuperação." }, { status: 400 });

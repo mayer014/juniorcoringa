@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { CamaraSyncMode, CamaraSyncResult } from "@/lib/camara-sync";
 
-async function requestSync(mode: CamaraSyncMode, phase?: "discover" | "enrich", sourceId?: string) {
+async function requestSync(mode: CamaraSyncMode, phase?: "discover" | "enrich", sourceId?: string, apiPage?: number, previousApiPageKey?: string) {
   const response = await fetch("/api/admin/camara/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode, phase, sourceId }),
+    body: JSON.stringify({ mode, phase, sourceId, apiPage, previousApiPageKey }),
   });
   const rawPayload = await response.text();
   let payload: { error?: string; result?: CamaraSyncResult };
@@ -29,18 +29,34 @@ export function CamaraSyncButton() {
   const [error, setError] = useState(false);
   const stopRequested = useRef(false);
   const [stopping, setStopping] = useState(false);
+  const [sourcesMessage, setSourcesMessage] = useState("");
 
   async function importNews() {
     setMessage("Consultando o arquivo oficial de notícias...");
     let result = await requestSync("news", "discover");
+    const sourceReports = [...(result.newsSources || [])];
+    const pageKeys = new Set<string>();
+    while (result.newsNextApiPage && !stopRequested.current) {
+      if (result.newsApiPageKey && pageKeys.has(result.newsApiPageKey)) break;
+      if (result.newsApiPageKey) pageKeys.add(result.newsApiPageKey);
+      setMessage(`Consultando a API oficial, página ${result.newsNextApiPage}... ${result.newsKnown || 0} matérias do vereador identificadas.`);
+      result = await requestSync("news", "discover", undefined, result.newsNextApiPage, result.newsApiPageKey);
+      sourceReports.push(...(result.newsSources || []));
+    }
+    const historyComplete = Boolean(result.newsHistoryComplete);
+    const labels = { archive: "página do vereador", api: "API oficial", rss: "RSS recente", recovery: "acervo de recuperação" };
+    const used = [...new Set(sourceReports.filter((entry) => entry.status === "ok" && entry.found > 0).map((entry) => labels[entry.source]))];
+    const unavailable = [...new Set(sourceReports.filter((entry) => entry.status === "unavailable").map((entry) => `${labels[entry.source]}: ${entry.message}`))];
+    setSourcesMessage(`${used.length ? `Fontes utilizadas: ${used.join(", ")}.` : "Nenhuma fonte retornou novas matérias."}${unavailable.length ? ` Fontes indisponíveis: ${unavailable.join("; ")}` : ""}`);
     const queue = result.newsQueueIds || [];
+    const known = result.newsKnown || result.newsFound || queue.length;
     let inserted = 0;
     let updated = 0;
     let processed = 0;
     const errors: string[] = [];
     for (const sourceId of queue) {
       if (stopRequested.current) break;
-      setMessage(`${result.newsFound || queue.length} matérias localizadas. Recuperando ${processed + 1} de ${queue.length}... ${inserted} novas e ${updated} atualizadas.`);
+      setMessage(`${known} matérias identificadas. Recuperando ${processed + 1} de ${queue.length}... ${inserted} novas e ${updated} atualizadas.`);
       result = await requestSync("news", "enrich", sourceId);
       inserted += result.newsInserted;
       updated += result.newsUpdated;
@@ -49,14 +65,15 @@ export function CamaraSyncButton() {
       router.refresh();
     }
     const waiting = result.newsPending + result.newsFailed;
-    setError(errors.length > 0);
-    setMessage(`${stopRequested.current ? "Importação pausada." : "Consulta concluída."} ${inserted} matérias novas, ${updated} atualizadas e ${result.newsComplete} completas no total.${waiting ? ` ${waiting} aguardam recuperação; o próximo clique retoma a fila.` : ""}${errors.length ? ` Última falha: ${errors.at(-1)}` : ""}`);
+    setError(errors.length > 0 || (!historyComplete && known === 0));
+    setMessage(`${stopRequested.current ? "Importação pausada." : "Consulta concluída."} ${inserted} matérias novas, ${updated} atualizadas e ${result.newsComplete} completas no total.${!historyComplete ? " A consulta online do histórico está parcial; o acervo e a fila disponíveis foram preservados." : ""}${waiting ? ` ${waiting} aguardam recuperação; o próximo clique retoma a fila.` : ""}${errors.length ? ` Última falha: ${errors.at(-1)}` : ""}`);
   }
 
   async function synchronize(mode: "daily" | "history" | "indications" | "news") {
     setLoading(mode);
     setMessage("");
     setError(false);
+    setSourcesMessage("");
     stopRequested.current = false;
     setStopping(false);
     try {
@@ -111,6 +128,7 @@ export function CamaraSyncButton() {
       </div>
       {loading === "news" && <button className="admin-button admin-button--secondary" type="button" disabled={stopping} onClick={() => { stopRequested.current = true; setStopping(true); }}>{stopping ? "Finalizando matéria atual..." : "Pausar importação"}</button>}
       {message && <p className={error ? "camara-sync-message is-error" : "camara-sync-message"}>{message}</p>}
+      {sourcesMessage && <p className="camara-sync-message">{sourcesMessage}</p>}
     </div>
   );
 }

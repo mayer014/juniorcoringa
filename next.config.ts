@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@napi-rs/canvas", "better-sqlite3", "pdf-parse"],
   outputFileTracingIncludes: {
     "/api/**": [
+      "seed/camara-news-recovery/**/*",
       "node_modules/@napi-rs/canvas/**/*",
       "node_modules/@napi-rs/canvas-*/**/*",
       "node_modules/pdfjs-dist/**/*",

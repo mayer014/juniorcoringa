@@ -1,6 +1,21 @@
 import * as he from "he";
 import type { OfficialNewsCandidate } from "@/lib/types";
 
+export type OfficialNewsSource = {
+  source: "archive" | "rss" | "api" | "recovery";
+  status: "ok" | "unavailable";
+  found: number;
+  message?: string;
+};
+
+export function officialNewsDate(value: string | undefined) {
+  const iso = value?.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(Z|[+-]\d{2}:\d{2})?$/);
+  if (iso) return `${iso[1]}T${iso[2]}${iso[3] || "-04:00"}`;
+  const brazilian = value?.match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}:\d{2})(?::(\d{2}))?)?/);
+  if (brazilian) return `${brazilian[3]}-${brazilian[2]}-${brazilian[1]}T${brazilian[4] || "12:00"}:${brazilian[5] || "00"}-04:00`;
+  throw new Error("A fonte oficial não informou uma data válida para a matéria.");
+}
+
 export function officialNewsPublicationId(value: string) {
   try {
     return new URL(value).pathname.match(/\/(\d+)\/?$/)?.[1] ?? null;
