@@ -13,11 +13,14 @@ import {
   finishCamaraSyncRun,
   getLegislativeItemByExternalId,
   getOfficialNewsQueueCounts,
+  getNewsSyncProgress,
   heartbeatCamaraSyncRun,
   listLegislativeItems,
   listOfficialNewsCandidatesForEnrichment,
   markOfficialNewsCandidateComplete,
   markOfficialNewsCandidateFailed,
+  recordNewsDiscoveryPage,
+  resetNewsHistoryProgress,
   startCamaraSyncRun,
   updateLegislativeItemTitle,
   upsertOfficialNewsCandidate,
@@ -30,7 +33,7 @@ import {
   normalizeLegislativeText,
   sentenceCase,
 } from "@/lib/legislative-content";
-import { mergeOfficialNewsCandidates, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId, type OfficialNewsSource } from "@/lib/official-news";
+import { mergeOfficialNewsCandidates, newsPageReachedCutoff, newsUpdateCutoff, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId, type NewsSyncProgress, type OfficialNewsSource } from "@/lib/official-news";
 import type { LegislativeItemInput, LegislativeStatusGroup, OfficialNewsCandidate } from "@/lib/types";
 
 const LEGIS_BASE_URL = "https://legis.camara.ms.gov.br";
@@ -85,6 +88,8 @@ export type CamaraSyncResult = {
   newsApiPageKey?: string;
   newsHistoryComplete?: boolean;
   newsKnown?: number;
+  newsScope?: "updates" | "history";
+  newsProgress?: NewsSyncProgress;
   projects: number;
   indications: number;
   pdfDetails: number;
@@ -97,7 +102,7 @@ export type CamaraSyncResult = {
 
 export type CamaraSyncMode = "daily" | "history" | "indications" | "news";
 export type CamaraSyncTrigger = "manual" | "scheduled";
-export type CamaraNewsOptions = { phase?: "discover" | "enrich"; sourceId?: string; apiPage?: number; previousApiPageKey?: string };
+export type CamaraNewsOptions = { phase?: "discover" | "enrich"; sourceId?: string; apiPage?: number; previousApiPageKey?: string; scope?: "updates" | "history"; resetHistory?: boolean };
 
 type NewsDiscovery = {
   items: OfficialNewsCandidate[];
@@ -105,6 +110,7 @@ type NewsDiscovery = {
   nextApiPage?: number;
   apiPageKey?: string;
   historyComplete: boolean;
+  checkpoint?: Parameters<typeof recordNewsDiscoveryPage>[0];
 };
 
 function normalizeText(value: unknown) {
@@ -717,10 +723,14 @@ function candidatesFromPublications(publications: OfficialPublication[]) {
 }
 
 async function discoverOfficialNews(options: CamaraNewsOptions = {}, scanHistory = false): Promise<NewsDiscovery> {
-  const page = options.apiPage ?? 1;
+  const scope = options.scope || "updates";
+  const progress = getNewsSyncProgress();
+  const page = options.apiPage ?? (scope === "history" ? progress.nextHistoryPage : 1);
+  const initialRequest = options.apiPage === undefined;
+  const historyAlreadyComplete = scope === "history" && progress.historyComplete;
+  const cutoff = newsUpdateCutoff(progress.watermark);
   const sources: OfficialNewsSource[] = [];
   let publications: OfficialPublication[] | null = null;
-  let archiveComplete = false;
   async function attempt(source: OfficialNewsSource["source"], load: () => Promise<OfficialNewsCandidate[]>) {
     try {
       const items = await load();
@@ -734,34 +744,41 @@ async function discoverOfficialNews(options: CamaraNewsOptions = {}, scanHistory
   }
   // Each paginated request queries ONE API page, never the entire archive in one HTTP request.
   const [recovery, api, rss, archive] = await Promise.all([
-    page === 1 ? attempt("recovery", async () => {
+    initialRequest && scope === "history" ? attempt("recovery", async () => {
       const saved = await readNewsRecovery();
       if (!saved) throw new Error("Nenhum acervo local de recuperação disponível.");
       return saved.articles;
     }) : [],
-    attempt("api", async () => {
-      publications = await fetchOfficialPublications(page);
-      return candidatesFromPublications(publications);
-    }),
-    page === 1 ? attempt("rss", fetchOfficialNewsRss) : [],
-    page === 1 ? attempt("archive", async () => {
+    !historyAlreadyComplete ? attempt("api", async () => {
+      const entries = await fetchOfficialPublications(page);
+      const items = candidatesFromPublications(entries);
+      publications = entries;
+      return items;
+    }) : [],
+    initialRequest ? attempt("rss", fetchOfficialNewsRss) : [],
+    initialRequest ? attempt("archive", async () => {
       const items = await fetchOfficialMemberNewsArchive();
-      archiveComplete = true;
       return items;
     }) : [],
   ]);
   const entries = publications as OfficialPublication[] | null;
   const pageKey = entries ? createHash("sha256").update(JSON.stringify(entries.map((entry) => entry.link))).digest("hex") : undefined;
   const repeated = Boolean(pageKey && options.previousApiPageKey === pageKey);
-  const hasMore = entries !== null && entries.length > 0 && !repeated && page < 200;
+  const dates = (entries || []).flatMap((entry) => { try { return [officialNewsDate(entry.data)]; } catch { return []; } });
+  const reachedCutoff = scope === "updates" && entries !== null && newsPageReachedCutoff(dates, entries.length, cutoff);
+  const complete = historyAlreadyComplete || (entries !== null && (entries.length === 0 || reachedCutoff));
+  const hasMore = entries !== null && entries.length > 0 && !repeated && !reachedCutoff && page < 10000;
   if (repeated) sources.push({ source: "api", status: "unavailable", found: 0, message: "A API repetiu a página anterior; a busca foi interrompida para evitar um ciclo." });
-  if (page === 200 && entries?.length) sources.push({ source: "api", status: "unavailable", found: 0, message: "O limite de 200 páginas foi alcançado. O acervo encontrado foi preservado." });
+  if (page === 10000 && entries?.length) sources.push({ source: "api", status: "unavailable", found: 0, message: "O limite da consulta foi alcançado. O acervo encontrado foi preservado." });
+  const items = mergeOfficialNewsCandidates(recovery, api, rss, archive);
   return {
-    items: mergeOfficialNewsCandidates(recovery, api, rss, archive),
+    items: scope === "history" ? items : items.filter((item) => Date.parse(item.publishedAt) >= Date.parse(cutoff)),
     sources,
-    nextApiPage: scanHistory && !archiveComplete && hasMore ? page + 1 : undefined,
+    nextApiPage: scanHistory && hasMore ? page + 1 : undefined,
     apiPageKey: pageKey,
-    historyComplete: archiveComplete || (entries !== null && entries.length === 0),
+    historyComplete: complete,
+    checkpoint: entries !== null && !repeated ? { scope, page,
+      latestDate: dates.sort((a, b) => Date.parse(b) - Date.parse(a))[0] || null, complete } : undefined,
   };
 }
 
@@ -820,6 +837,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
   }, 15_000);
   heartbeat.unref();
   try {
+    if (mode === "news" && newsOptions.phase !== "enrich" && newsOptions.scope === "history" && newsOptions.resetHistory && !newsOptions.apiPage) resetNewsHistoryProgress();
     const currentYear = new Date().getFullYear();
     const emptyNews: NewsDiscovery = { items: [], sources: [], historyComplete: false };
     const [projectRows, indicationRows, news] = mode === "history"
@@ -867,6 +885,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     const counts = { inserted: 0, updated: 0, unchanged: 0 };
     for (const item of items) counts[upsertLegislativeItem(item)] += 1;
     for (const candidate of news.items) upsertOfficialNewsCandidate(candidate);
+    if (news.checkpoint) recordNewsDiscoveryPage(news.checkpoint);
     const newsCounts = mode === "news" && newsOptions.phase === "enrich"
       ? await enrichQueuedOfficialNews(1, newsOptions.sourceId)
       : mode === "daily"
@@ -895,6 +914,8 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       newsApiPageKey: news.apiPageKey,
       newsHistoryComplete: news.historyComplete,
       newsKnown: newsQueue.total,
+      newsScope: newsOptions.scope || "updates",
+      newsProgress: getNewsSyncProgress(),
       projects: projects.length,
       indications: indications.length,
       pdfDetails: parsedIndications.filter((entry) => entry.pdfLoaded).length,

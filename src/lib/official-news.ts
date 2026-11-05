@@ -8,11 +8,33 @@ export type OfficialNewsSource = {
   message?: string;
 };
 
+export type NewsSyncProgress = {
+  watermark: string | null;
+  lastCheckedAt: string | null;
+  nextHistoryPage: number;
+  historyComplete: boolean;
+};
+
+export function newsUpdateCutoff(watermark: string | null, now = Date.now()) {
+  // A two-day overlap catches delayed publication/indexing without reopening the old archive.
+  return new Date(watermark ? Date.parse(watermark) - 2 * 86400000 : now - 7 * 86400000).toISOString();
+}
+
+export function newsPageReachedCutoff(dates: string[], totalEntries: number, cutoff: string) {
+  if (!totalEntries || dates.length !== totalEntries) return false;
+  const times = dates.map(Date.parse);
+  if (times.some((time) => !Number.isFinite(time))) return false;
+  const boundary = Date.parse(cutoff);
+  const descending = times.every((time, index) => index === 0 || time <= times[index - 1]);
+  return Math.max(...times) < boundary || (descending && Math.min(...times) < boundary);
+}
+
 export function officialNewsDate(value: string | undefined) {
   const iso = value?.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(Z|[+-]\d{2}:\d{2})?$/);
-  if (iso) return `${iso[1]}T${iso[2]}${iso[3] || "-04:00"}`;
   const brazilian = value?.match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}:\d{2})(?::(\d{2}))?)?/);
-  if (brazilian) return `${brazilian[3]}-${brazilian[2]}-${brazilian[1]}T${brazilian[4] || "12:00"}:${brazilian[5] || "00"}-04:00`;
+  const date = iso ? `${iso[1]}T${iso[2]}${iso[3] || "-04:00"}`
+    : brazilian ? `${brazilian[3]}-${brazilian[2]}-${brazilian[1]}T${brazilian[4] || "12:00"}:${brazilian[5] || "00"}-04:00` : null;
+  if (date && Number.isFinite(Date.parse(date))) return date;
   throw new Error("A fonte oficial não informou uma data válida para a matéria.");
 }
 

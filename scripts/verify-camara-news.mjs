@@ -19,6 +19,9 @@ const taskData = mkdtempSync(path.join(tmpdir(), "junior-camara-http-test-"));
 const ids = ["40257", "40215", "39428"];
 const article = "O vereador Junior Coringa acompanhou as demandas dos moradores e solicitou melhorias na iluminação pública. A iniciativa atende à comunidade das Moreninhas, com instalação de postes e reforço da segurança nas ruas do bairro.";
 let archiveUnavailable = false;
+let latestItemEnabled = false;
+let interruptUpdate = false;
+const apiRequests = [];
 const fixture = createServer((request, response) => {
   const url = new URL(request.url, "http://fixture.test");
   if (archiveUnavailable || recoveryOnly || (blockedArchive && /^\/(?:camara|imprensa)\//.test(url.pathname))) {
@@ -28,11 +31,19 @@ const fixture = createServer((request, response) => {
   }
   if (url.pathname === "/api") {
     const page = Number(url.searchParams.get("pagina"));
+    apiRequests.push(page);
+    if (interruptUpdate && page === 2) {
+      response.writeHead(502); response.end("upstream unavailable"); return;
+    }
     const pageIds = page === 1 ? [ids[0]] : page === 2 ? ids.slice(1) : [];
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify(pageIds.map((id) => ({ titulo: `Junior Coringa: matéria ${id}`,
-      data: "2026-10-14 13:23:00", resumo: "", imagem: `http://127.0.0.1:${fixturePort}/news/capa.png`,
-      link: `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1/${id}` }))));
+    const entry = (id, date) => ({ titulo: `Junior Coringa: matéria ${id}`,
+      data: date, resumo: "", imagem: `http://127.0.0.1:${fixturePort}/news/capa.png`,
+      link: `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1/${id}` });
+    let entries = pageIds.map((id) => entry(id, page === 1 ? "2026-10-14 13:23:00" : "2026-09-01 13:23:00"));
+    if (latestItemEnabled && page === 1) entries.unshift(entry("50000", "2026-11-05 12:00:00"));
+    if (interruptUpdate && page === 1) entries = [entry("50001", "2026-11-07 12:00:00"), entry("50000", "2026-11-05 12:00:00")];
+    response.end(JSON.stringify(entries));
     return;
   }
   if (url.pathname === "/rss") {
@@ -125,13 +136,13 @@ try {
     return JSON.parse(text);
   }
   const started = Date.now();
-  async function discover() {
-    let { result } = await synchronize({ phase: "discover" });
+  async function discover(scope = "history", resetHistory = false) {
+    let { result } = await synchronize({ phase: "discover", scope, resetHistory });
     const firstSources = result.newsSources;
     let pages = 1;
     while (result.newsNextApiPage) {
       assert.ok(pages < 200);
-      ({ result } = await synchronize({ phase: "discover", apiPage: result.newsNextApiPage, previousApiPageKey: result.newsApiPageKey }));
+      ({ result } = await synchronize({ phase: "discover", scope, apiPage: result.newsNextApiPage, previousApiPageKey: result.newsApiPageKey }));
       pages += 1;
     }
     return { ...result, firstSources, pages };
@@ -153,6 +164,7 @@ try {
     console.log(JSON.stringify({ phase: "article", id, inserted: result.newsInserted, milliseconds: Date.now() - began }));
   }
   database = new Database(path.join(taskData, "junior-coringa.sqlite"), { readonly: true });
+  let expectedPosts = selectedIds.length;
   const posts = database.prepare("SELECT * FROM posts").all();
   assert.equal(posts.length, selectedIds.length);
   for (const post of posts) {
@@ -167,6 +179,42 @@ try {
   const again = await discover();
   for (const id of ids) assert.ok(!again.newsQueueIds.includes(`camara-news:${id}`), `Completed article queued again: ${id}`);
   assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, selectedIds.length);
+  if (!live && !recoveryOnly) {
+    apiRequests.length = 0;
+    const completedHistory = await discover("history");
+    assert.deepEqual(apiRequests, [], "Um histórico já concluído não é percorrido novamente");
+    assert.equal(completedHistory.newsProgress.historyComplete, true);
+
+    apiRequests.length = 0;
+    const updates = await discover("updates");
+    assert.deepEqual(apiRequests, [1, 2], "A busca recente para antes da página final do arquivo antigo");
+    assert.equal(updates.newsQueueIds.length, 0);
+    latestItemEnabled = true;
+    const fresh = await discover("updates");
+    assert.deepEqual(fresh.newsQueueIds, ["camara-news:50000"]);
+    const { result: imported } = await synchronize({ phase: "enrich", sourceId: "camara-news:50000" });
+    assert.equal(imported.newsInserted, 1);
+    expectedPosts += 1;
+    apiRequests.length = 0;
+    const upToDate = await discover("updates");
+    assert.deepEqual(apiRequests, [1], "Depois de atualizar, uma consulta não volta à página histórica seguinte");
+    assert.equal(upToDate.newsQueueIds.length, 0);
+
+    interruptUpdate = true;
+    const interrupted = await discover("updates");
+    assert.equal(interrupted.newsHistoryComplete, false);
+    assert.equal(interrupted.newsProgress.watermark, upToDate.newsProgress.watermark, "Falha de página não avança o ponto de corte");
+    assert.ok(interrupted.newsQueueIds.includes("camara-news:50001"), "A matéria encontrada antes da falha permanece na fila");
+    interruptUpdate = false;
+    apiRequests.length = 0;
+    await synchronize({ phase: "discover", scope: "history", resetHistory: true });
+    const { result: resumed } = await synchronize({ phase: "discover", scope: "history" });
+    assert.deepEqual(apiRequests, [1, 2], "A recuperação antiga retoma a próxima página em vez de voltar ao início");
+    assert.equal(resumed.newsProgress.nextHistoryPage, 3);
+    assert.equal(resumed.newsProgress.watermark, upToDate.newsProgress.watermark);
+    assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, expectedPosts);
+    console.log("PASS: completed history is not rescanned; updates fetch only new items; failed pages preserve the watermark and queue.");
+  }
   if (exportRecovery) {
     const directory = path.resolve("seed/camara-news-recovery");
     mkdirSync(path.join(directory, "uploads"), { recursive: true });
@@ -186,7 +234,7 @@ try {
     const failed = await synchronize({ phase: "discover" });
     assert.equal(failed.result.newsHistoryComplete, false);
     assert.ok(failed.result.newsSources.some((entry) => entry.status === "unavailable" && /Bot Verification/.test(entry.message)));
-    assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, selectedIds.length);
+    assert.equal(database.prepare("SELECT COUNT(*) AS total FROM posts").get().total, expectedPosts);
   }
   console.log("PASS: authenticated HTTP import, full text, saved images, public pages, no duplicates, resumable queue" + (live ? " (real Câmara)." : `, blocked archive=${blockedArchive}, offline recovery=${recoveryOnly}.`));
 } catch (error) {

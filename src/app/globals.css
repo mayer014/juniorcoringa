@@ -2771,6 +2771,9 @@ img {
 .camara-sync-buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .camara-sync-message { max-width: 410px; margin: 0; color: #087d30; font-size: 9px; text-align: right; }
 .camara-sync-message.is-error { color: #a72d39; }
+.camara-news-recovery-options { max-width: 480px; color: var(--blue); font-size: 11px; }
+.camara-news-recovery-options summary { padding: 5px 0; cursor: pointer; text-align: right; }
+.camara-news-recovery-options .camara-sync-buttons { padding-top: 7px; }
 .admin-stats--four { grid-template-columns: repeat(4, 1fr); }
 .legislative-admin-manager { overflow: hidden; }
 .legislative-admin-filters { padding: 16px 20px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid rgba(18,55,93,.08); background: #f9fbfd; }

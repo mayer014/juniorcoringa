@@ -120,6 +120,17 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   database.upsertOfficialNewsCandidate(news);
   assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
 
+  assert.equal(database.getNewsSyncProgress().watermark, null);
+  database.recordNewsDiscoveryPage({ scope: "updates", page: 1, latestDate: "2026-11-05T12:00:00Z", complete: false });
+  assert.equal(database.getNewsSyncProgress().watermark, null, "Uma consulta interrompida não avança o ponto de corte");
+  database.recordNewsDiscoveryPage({ scope: "updates", page: 2, latestDate: "2026-11-01T12:00:00Z", complete: true });
+  assert.equal(database.getNewsSyncProgress().watermark, "2026-11-05T12:00:00Z");
+  database.recordNewsDiscoveryPage({ scope: "history", page: 166, latestDate: "2020-01-01T12:00:00Z", complete: false });
+  assert.equal(database.getNewsSyncProgress().nextHistoryPage, 167);
+  database.resetNewsHistoryProgress();
+  assert.equal(database.getNewsSyncProgress().nextHistoryPage, 1);
+  assert.equal(database.getNewsSyncProgress().watermark, "2026-11-05T12:00:00Z", "Revisar histórico não apaga o progresso das novidades");
+
   // A different official URL for the same code must not duplicate or erase the text.
   assert.equal(database.createOfficialNewsPost({ ...fullNews, sourceUrl: "https://www.camara.ms.gov.br/imprensa/noticias/Noticias/1/2026/40257", content: "[Leia a matéria completa](https://camara.test/40257)", excerpt: "Resumo genérico.", coverImage: null }), "unchanged");
   const storedNews = database.db.prepare("SELECT content FROM posts WHERE source_id = ?").get(news.sourceId) as { content: string };

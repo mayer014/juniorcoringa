@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
-import { hasFullOfficialNewsContent } from "@/lib/official-news";
+import { hasFullOfficialNewsContent, type NewsSyncProgress } from "@/lib/official-news";
 import type { CamaraSyncRun, GalleryItem, GalleryItemInput, GalleryStatus, LegislativeEnrichmentStatus, LegislativeItem, LegislativeItemInput, LegislativeItemReviewInput, LegislativeKind, LegislativeStatusGroup, OfficialNewsCandidate, OfficialNewsQueueCounts, OfficialNewsQueueItem, Post, PostCategory, PostInput, PostOption, PostStatus } from "@/lib/types";
 
 type PostRow = {
@@ -266,6 +266,29 @@ function openDatabase() {
 }
 
 export const db = globalForDb.juniorCoringaDb ?? openDatabase();
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS camara_news_progress (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    watermark TEXT,
+    last_checked_at TEXT,
+    update_head TEXT,
+    history_head TEXT,
+    next_history_page INTEGER NOT NULL DEFAULT 1,
+    history_complete INTEGER NOT NULL DEFAULT 0
+  );
+`);
+const progressCreated = db.prepare("INSERT OR IGNORE INTO camara_news_progress (id) VALUES (1)").run().changes;
+if (progressCreated) {
+  // Adopt the existing import as the starting point when upgrading an already populated site.
+  const latest = db.prepare(`
+    SELECT published_at FROM (
+      SELECT published_at FROM official_news_queue
+      UNION ALL SELECT published_at FROM posts WHERE source_id LIKE 'camara-%'
+    ) WHERE julianday(published_at) IS NOT NULL ORDER BY julianday(published_at) DESC LIMIT 1
+  `).get() as { published_at: string } | undefined;
+  if (latest) db.prepare("UPDATE camara_news_progress SET watermark = ? WHERE id = 1").run(latest.published_at);
+}
 
 export function getDatabaseStorageStatus() {
   if (process.platform === "win32") return { dataDir, persistentMountDetected: true };
@@ -1175,6 +1198,50 @@ export function listOfficialNewsCandidatesForEnrichment(limit = 50, sourceId?: s
     LIMIT ?
   `).all(sourceId ?? null, sourceId ?? null, limit) as OfficialNewsQueueRow[];
   return rows.map(mapOfficialNewsQueueItem);
+}
+
+type NewsProgressRow = {
+  watermark: string | null;
+  last_checked_at: string | null;
+  update_head: string | null;
+  history_head: string | null;
+  next_history_page: number;
+  history_complete: number;
+};
+
+export function getNewsSyncProgress(): NewsSyncProgress {
+  const row = db.prepare("SELECT * FROM camara_news_progress WHERE id = 1").get() as NewsProgressRow;
+  return { watermark: row.watermark, lastCheckedAt: row.last_checked_at, nextHistoryPage: row.next_history_page, historyComplete: Boolean(row.history_complete) };
+}
+
+export function resetNewsHistoryProgress() {
+  // This resets only the scan cursor. Imported posts and queued failures are retained.
+  db.prepare("UPDATE camara_news_progress SET next_history_page = 1, history_complete = 0, history_head = NULL WHERE id = 1").run();
+}
+
+export function recordNewsDiscoveryPage(input: {
+  scope: "updates" | "history";
+  page: number;
+  latestDate: string | null;
+  complete: boolean;
+}) {
+  db.transaction(() => {
+    const row = db.prepare("SELECT * FROM camara_news_progress WHERE id = 1").get() as NewsProgressRow;
+    const newest = (...dates: Array<string | null>) => dates.filter((date): date is string => Boolean(date))
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] || null;
+    const head = newest(input.scope === "history" ? row.history_head : row.update_head, input.latestDate);
+    const watermark = input.complete ? newest(row.watermark, head) : row.watermark;
+    if (input.scope === "history") {
+      db.prepare(`UPDATE camara_news_progress SET history_head = ?, next_history_page = ?, history_complete = ?,
+        watermark = ?, last_checked_at = CASE WHEN ? = 1 THEN ? ELSE last_checked_at END WHERE id = 1`)
+        .run(head, input.complete ? input.page : input.page + 1, input.complete ? 1 : 0, watermark,
+          input.complete ? 1 : 0, new Date().toISOString());
+    } else {
+      db.prepare(`UPDATE camara_news_progress SET update_head = ?, watermark = ?,
+        last_checked_at = CASE WHEN ? = 1 THEN ? ELSE last_checked_at END WHERE id = 1`)
+        .run(input.complete ? null : head, watermark, input.complete ? 1 : 0, new Date().toISOString());
+    }
+  })();
 }
 
 export function markOfficialNewsCandidateComplete(sourceId: string) {

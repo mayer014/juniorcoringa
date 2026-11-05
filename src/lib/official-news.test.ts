@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeOfficialNewsCandidates, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+import { mergeOfficialNewsCandidates, newsPageReachedCutoff, newsUpdateCutoff, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
+
+test("a atualização para na janela recente e não encerra diante de uma página inválida ou desordenada", () => {
+  const cutoff = newsUpdateCutoff("2026-11-05T12:00:00Z");
+  assert.equal(cutoff, "2026-11-03T12:00:00.000Z");
+  assert.equal(newsPageReachedCutoff(["2026-11-06T12:00:00Z", "2026-11-04T12:00:00Z"], 2, cutoff), false);
+  assert.equal(newsPageReachedCutoff(["2026-11-05T12:00:00Z", "2026-11-02T12:00:00Z"], 2, cutoff), true);
+  assert.equal(newsPageReachedCutoff(["2026-11-02T12:00:00Z", "2026-11-05T12:00:00Z"], 2, cutoff), false);
+  assert.equal(newsPageReachedCutoff(["2026-11-01T12:00:00Z"], 2, cutoff), false);
+});
 
 test("usa a foto da matéria mesmo quando og:image anuncia o logotipo genérico", () => {
   const generic = '<meta property="og:image" content="https://www.camara.ms.gov.br/news/noimage.jpg">';
@@ -13,6 +22,7 @@ test("preserva a data antiga da API em vez de trocar pela data de importação",
   assert.equal(officialNewsDate("2026-07-02 12:44:00"), "2026-07-02T12:44:00-04:00");
   assert.equal(officialNewsDate("02/07/2026 12:44"), "2026-07-02T12:44:00-04:00");
   assert.throws(() => officialNewsDate("sem data"), /data válida/);
+  assert.throws(() => officialNewsDate("2026-99-14 12:00:00"), /data válida/);
 });
 
 test("lê o arquivo de notícias do vereador e preserva o identificador oficial", () => {

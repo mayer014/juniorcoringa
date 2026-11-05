@@ -11,15 +11,15 @@ export async function POST(request: Request) {
   if (!isSameOrigin(request)) return NextResponse.json({ error: "Origem inválida." }, { status: 403 });
   if (!(await getSession())) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   try {
-    const body = await request.json().catch(() => null) as { mode?: unknown; phase?: unknown; sourceId?: unknown; apiPage?: unknown; previousApiPageKey?: unknown } | null;
+    const body = await request.json().catch(() => null) as { mode?: unknown; phase?: unknown; sourceId?: unknown; apiPage?: unknown; previousApiPageKey?: unknown; scope?: unknown; resetHistory?: unknown } | null;
     const mode: CamaraSyncMode = body?.mode === "history"
       ? "history"
       : body?.mode === "indications"
         ? "indications"
         : body?.mode === "news" ? "news" : "daily";
-    const newsOptions: CamaraNewsOptions = { phase: body?.phase === "enrich" ? "enrich" : "discover" };
+    const newsOptions: CamaraNewsOptions = { phase: body?.phase === "enrich" ? "enrich" : "discover", scope: body?.scope === "history" ? "history" : "updates", resetHistory: body?.resetHistory === true };
     if (mode === "news" && body?.apiPage !== undefined) {
-      if (typeof body.apiPage !== "number" || !Number.isInteger(body.apiPage) || body.apiPage < 1 || body.apiPage > 200) {
+      if (typeof body.apiPage !== "number" || !Number.isInteger(body.apiPage) || body.apiPage < 1 || body.apiPage > 10000) {
         return NextResponse.json({ error: "Página inválida do histórico oficial." }, { status: 400 });
       }
       newsOptions.apiPage = body.apiPage;
