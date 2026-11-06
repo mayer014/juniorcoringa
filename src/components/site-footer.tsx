@@ -32,6 +32,12 @@ export function SiteFooter() {
           <Link href="/atuacao-legislativa" className="footer-link">
             Atuação legislativa <ArrowUpRight size={17} />
           </Link>
+          <Link href="/indique-uma-melhoria" className="footer-link">
+            Indique uma melhoria <ArrowUpRight size={17} />
+          </Link>
+          <Link href="/privacidade" className="footer-admin">
+            Aviso de privacidade
+          </Link>
           <Link href="/admin/login" className="footer-admin">
             Área administrativa
           </Link>

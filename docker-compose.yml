@@ -8,6 +8,13 @@ services:
       ADMIN_EMAIL: admin@juniorcoringa.com.br
       ADMIN_PASSWORD: troque-esta-senha
       SESSION_SECRET: troque-por-uma-chave-aleatoria-longa
+      CITIZEN_DATA_SECRET: troque-por-outra-chave-aleatoria-longa-e-exclusiva
+      EVOLUTION_API_URL: https://evolution.seudominio.com.br
+      EVOLUTION_API_KEY: configure-a-chave
+      EVOLUTION_INSTANCE: mandato-junior-coringa
+      EVOLUTION_WEBHOOK_SECRET: troque-por-um-segredo-aleatorio-longo
+      EVOLUTION_SEND_ENABLED: "false"
+      COMMUNICATIONS_CRON_SECRET: troque-por-outro-segredo-aleatorio-longo
       CAMARA_API_URL: https://www.camara.ms.gov.br/jsonweb/web-aplicativo.php
       CAMARA_API_TOKEN: configure-o-token
       CAMARA_VEREADOR_NOME: Junior Coringa

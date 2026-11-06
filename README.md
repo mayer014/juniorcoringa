@@ -10,6 +10,8 @@ Portal institucional e painel de publicações do mandato do vereador Junior Cor
 - busca e filtros por categoria;
 - página individual para cada matéria;
 - painel protegido em `/admin`;
+- canal público de indicações em `/indique-uma-melhoria`, com protocolo privado de acompanhamento;
+- fila de atendimentos para o assessor, histórico de andamento, fotos protegidas e exportação CSV;
 - criação, edição, rascunho, publicação, destaque e exclusão de matérias;
 - upload e otimização automática da imagem de capa;
 - banco SQLite e imagens em volume persistente;
@@ -43,7 +45,14 @@ Essa senha de desenvolvimento não funciona em produção.
 | `ADMIN_PASSWORD` | senha do painel; use uma senha longa e exclusiva |
 | `ADMIN_PASSWORD_HASH` | alternativa opcional a `ADMIN_PASSWORD`, usando hash bcrypt |
 | `SESSION_SECRET` | chave aleatória longa usada para assinar a sessão |
+| `CITIZEN_DATA_SECRET` | chave exclusiva usada para criptografar os dados pessoais dos moradores |
 | `DATA_DIR` | diretório persistente do banco e dos uploads |
+| `EVOLUTION_API_URL` | endereço HTTPS da instalação da Evolution API |
+| `EVOLUTION_API_KEY` | chave global ou da instância enviada no cabeçalho `apikey` |
+| `EVOLUTION_INSTANCE` | nome da instância conectada ao WhatsApp |
+| `EVOLUTION_WEBHOOK_SECRET` | segredo usado para autenticar os retornos da Evolution |
+| `EVOLUTION_SEND_ENABLED` | trava geral de envios; mantenha `false` durante a configuração |
+| `COMMUNICATIONS_CRON_SECRET` | segredo do endpoint interno que processa a fila de mensagens |
 | `CAMARA_SYNC_SECRET` | segredo do endpoint interno de sincronização |
 | `CAMARA_PDF_DETAILS_LIMIT` | quantidade máxima de PDFs novos detalhados por execução |
 | `CAMARA_NEWS_READER_URL` | leitor alternativo usado somente quando a Câmara bloqueia o corpo de uma matéria |
@@ -80,8 +89,19 @@ Todo o conteúdo criado pelo painel fica no volume montado em `/app/data`:
 
 - `junior-coringa.sqlite`: matérias e metadados;
 - `uploads/`: imagens das matérias.
+- `request-uploads/`: fotos protegidas anexadas às indicações.
 
 Para um backup completo, copie esse diretório com o aplicativo parado ou usando o recurso de snapshot/backup do provedor.
+
+## Canal de indicações
+
+O formulário público coleta nome, WhatsApp, endereço residencial e data de nascimento como campos obrigatórios, além dos dados do problema. O aceite do aviso de privacidade é obrigatório. A autorização para mensagens de relacionamento, atualizações e aniversário é separada e opcional.
+
+Cada envio gera um protocolo `JC-ANO-NÚMERO` e um link com token aleatório. A consulta pública mostra somente o andamento, sem revelar nome, telefone, endereço residencial ou notas internas. No painel, **Atendimentos** permite atribuir um assessor, registrar o protocolo do órgão, atualizar a situação, imprimir a ficha e exportar a fila.
+
+Os campos pessoais ficam criptografados no SQLite. Configure `CITIZEN_DATA_SECRET` em produção e mantenha essa chave no gerenciador de segredos; perdê-la impede a leitura dos dados existentes. As fotos ficam fora da pasta pública e só são servidas para uma sessão administrativa autenticada.
+
+A estrutura de fila para o retorno de 30 dias é criada somente quando houver autorização de WhatsApp. A página `/admin/whatsapp` verifica a conexão com a Evolution API, configura o webhook, exibe os retornos e mostra a fila. A rotina prepara mensagens de aniversário e acompanhamento, aceita `SAIR`, `CANCELAR` ou `PARAR` como cancelamento imediato e só envia entre 09:00 e 18:59 de Campo Grande. Os disparos permanecem bloqueados enquanto `EVOLUTION_SEND_ENABLED` não for `true`.
 
 ## Importação do site antigo
 

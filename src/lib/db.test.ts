@@ -161,6 +161,44 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   database.upsertOfficialNewsCandidate(news);
   assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
 
+  process.env.CITIZEN_DATA_SECRET = "test-only-citizen-data-secret";
+  const requests = await import("./citizen-requests");
+  const createdRequest = requests.createCitizenRequest({
+    fullName: "Maria de Souza Teste", phone: "(67) 99999-0000", birthDate: "1985-03-20",
+    postalCode: "79000000", street: "Rua Residencial", addressNumber: "123", addressComplement: "Casa 2",
+    neighborhood: "Centro", city: "Campo Grande", state: "MS", category: "lighting",
+    problemPostalCode: "79000100", problemStreet: "Avenida do Problema", problemNumber: "450",
+    problemNeighborhood: "Jardim Teste", problemCity: "Campo Grande", problemReference: "Em frente \u00e0 escola",
+    description: "Dois postes est\u00e3o apagados h\u00e1 mais de uma semana.", urgent: false,
+    privacyAccepted: true, relationshipConsent: true, utmSource: "instagram", utmMedium: "social",
+    utmCampaign: "bairro-teste", utmContent: null, referrer: "https://example.test/",
+  }, "ip-hash-test");
+  assert.match(createdRequest.protocol, /^JC-\d{4}-\d{6}$/);
+  const request = requests.getCitizenRequest(createdRequest.id)!;
+  assert.equal(request.fullName, "Maria de Souza Teste");
+  assert.equal(request.relationshipConsent, true);
+  assert.equal(requests.getCitizenRequestByTrackingToken(createdRequest.trackingToken)?.protocol, createdRequest.protocol);
+  assert.equal(requests.listCitizenRequests({ query: "Maria" }).length, 1);
+  assert.equal(requests.getCitizenRequestCounts().pending, 1);
+  assert.equal((database.db.prepare("SELECT full_name_enc FROM citizens WHERE id = ?").get(1) as { full_name_enc: string }).full_name_enc.includes("Maria"), false);
+  assert.equal((database.db.prepare("SELECT COUNT(*) AS total FROM citizen_communication_outbox").get() as { total: number }).total, 1);
+  const communications = await import("./communications");
+  assert.equal(communications.getCommunicationCounts().pending, 1);
+  const webhookResult = communications.handleEvolutionWebhook({
+    event: "messages.upsert",
+    data: { key: { remoteJid: "5567999990000@s.whatsapp.net", fromMe: false, id: "reply-test-1" }, message: { conversation: "SAIR" } },
+  });
+  assert.equal(webhookResult.optedOut, true);
+  assert.equal((database.db.prepare("SELECT relationship_opt_in FROM citizens WHERE id = 1").get() as { relationship_opt_in: number }).relationship_opt_in, 0);
+  assert.equal(communications.getCommunicationCounts().pending, 0);
+  assert.equal(communications.listRecentCommunicationEvents(1)[0]?.message, "SAIR");
+  const updatedRequest = requests.updateCitizenRequest(createdRequest.id, {
+    status: "protocolled", assignedTo: "Assessor Teste", officialProtocol: "PMCG-123",
+    officialDepartment: "SISEP", officialProtocolAt: "2026-11-06T10:30", note: "Protocolado no setor competente.",
+  }, "admin@example.test");
+  assert.equal(updatedRequest?.status, "protocolled");
+  assert.equal(updatedRequest?.history[0].note, "Protocolado no setor competente.");
+
   database.db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });

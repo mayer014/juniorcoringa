@@ -1,7 +1,87 @@
-import type { GalleryItemInput, GalleryStatus, LegislativeItemReviewInput, PostCategory, PostInput, PostStatus } from "@/lib/types";
+import type { CitizenRequestCategory, CitizenRequestInput, CitizenRequestStatus, CitizenRequestUpdateInput, GalleryItemInput, GalleryStatus, LegislativeItemReviewInput, PostCategory, PostInput, PostStatus } from "@/lib/types";
 
 const categories: PostCategory[] = ["Notícia", "Projeto", "Agenda", "Inclusão"];
 const statuses: PostStatus[] = ["draft", "published"];
+export const citizenRequestCategories: CitizenRequestCategory[] = ["pothole", "lighting", "cleaning", "traffic", "transport", "health", "education", "security", "leisure", "accessibility", "other"];
+export const citizenRequestStatuses: CitizenRequestStatus[] = ["received", "triage", "waiting_information", "assigned", "protocolled", "monitoring", "fulfilled", "partially_fulfilled", "not_fulfilled", "out_of_scope", "duplicate", "closed"];
+
+function optionalFormText(body: Record<string, unknown>, key: string, maximum: number) {
+  const value = typeof body[key] === "string" ? body[key].trim() : "";
+  return value ? value.slice(0, maximum) : null;
+}
+
+function requiredFormText(body: Record<string, unknown>, key: string, minimum: number, maximum: number, label: string) {
+  const value = typeof body[key] === "string" ? body[key].trim() : "";
+  if (value.length < minimum || value.length > maximum) return { error: `${label} deve ter entre ${minimum} e ${maximum} caracteres.` };
+  return { value };
+}
+
+export function validateCitizenRequestInput(value: unknown): { data?: CitizenRequestInput; error?: string } {
+  if (!value || typeof value !== "object") return { error: "Dados inv\u00e1lidos." };
+  const body = value as Record<string, unknown>;
+  const fullName = requiredFormText(body, "fullName", 5, 140, "O nome completo");
+  const street = requiredFormText(body, "street", 2, 180, "O endere\u00e7o residencial");
+  const addressNumber = requiredFormText(body, "addressNumber", 1, 20, "O n\u00famero residencial");
+  const neighborhood = requiredFormText(body, "neighborhood", 2, 120, "O bairro residencial");
+  const city = requiredFormText(body, "city", 2, 120, "A cidade");
+  const problemStreet = requiredFormText(body, "problemStreet", 2, 180, "O endere\u00e7o do problema");
+  const problemNeighborhood = requiredFormText(body, "problemNeighborhood", 2, 120, "O bairro do problema");
+  const problemCity = requiredFormText(body, "problemCity", 2, 120, "A cidade do problema");
+  const description = requiredFormText(body, "description", 20, 3000, "A descri\u00e7\u00e3o");
+  const invalid = [fullName, street, addressNumber, neighborhood, city, problemStreet, problemNeighborhood, problemCity, description]
+    .find((field): field is { error: string } => "error" in field);
+  if (invalid) return { error: invalid.error };
+  const phoneDigits = String(body.phone ?? "").replace(/\D/g, "");
+  const localPhone = phoneDigits.startsWith("55") && phoneDigits.length > 11 ? phoneDigits.slice(2) : phoneDigits;
+  if (localPhone.length < 10 || localPhone.length > 11) return { error: "Informe um telefone com DDD v\u00e1lido." };
+  const postalCode = String(body.postalCode ?? "").replace(/\D/g, "");
+  if (postalCode.length !== 8) return { error: "Informe um CEP residencial v\u00e1lido." };
+  const problemPostalCodeRaw = String(body.problemPostalCode ?? "").replace(/\D/g, "");
+  if (problemPostalCodeRaw && problemPostalCodeRaw.length !== 8) return { error: "Informe um CEP v\u00e1lido para o problema." };
+  const birthDate = typeof body.birthDate === "string" ? body.birthDate : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return { error: "Informe uma data de nascimento v\u00e1lida." };
+  const born = new Date(`${birthDate}T12:00:00-04:00`);
+  const now = new Date();
+  const [birthYear, birthMonth, birthDay] = birthDate.split("-").map(Number);
+  if (!Number.isFinite(born.getTime()) || born > now || born.getFullYear() !== birthYear || born.getMonth() + 1 !== birthMonth ||
+    born.getDate() !== birthDay || born.getFullYear() < now.getFullYear() - 120) return { error: "Informe uma data de nascimento v\u00e1lida." };
+  const state = String(body.state ?? "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(state)) return { error: "Informe a UF residencial." };
+  const category = body.category as CitizenRequestCategory;
+  if (!citizenRequestCategories.includes(category)) return { error: "Selecione uma categoria v\u00e1lida." };
+  if (body.privacyAccepted !== true) return { error: "Confirme a leitura do aviso de privacidade." };
+  return {
+    data: {
+      fullName: fullName.value!, phone: String(body.phone), birthDate, postalCode,
+      street: street.value!, addressNumber: addressNumber.value!, addressComplement: optionalFormText(body, "addressComplement", 120),
+      neighborhood: neighborhood.value!, city: city.value!, state, category,
+      problemPostalCode: problemPostalCodeRaw || null, problemStreet: problemStreet.value!,
+      problemNumber: optionalFormText(body, "problemNumber", 20), problemNeighborhood: problemNeighborhood.value!, problemCity: problemCity.value!,
+      problemReference: optionalFormText(body, "problemReference", 240), description: description.value!, urgent: body.urgent === true,
+      privacyAccepted: true, relationshipConsent: body.relationshipConsent === true,
+      utmSource: optionalFormText(body, "utmSource", 150), utmMedium: optionalFormText(body, "utmMedium", 150),
+      utmCampaign: optionalFormText(body, "utmCampaign", 150), utmContent: optionalFormText(body, "utmContent", 150),
+      referrer: optionalFormText(body, "referrer", 500),
+    },
+  };
+}
+
+export function validateCitizenRequestUpdate(value: unknown): { data?: CitizenRequestUpdateInput; error?: string } {
+  if (!value || typeof value !== "object") return { error: "Dados inv\u00e1lidos." };
+  const body = value as Record<string, unknown>;
+  const status = body.status as CitizenRequestStatus;
+  if (!citizenRequestStatuses.includes(status)) return { error: "Situa\u00e7\u00e3o inv\u00e1lida." };
+  return {
+    data: {
+      status,
+      assignedTo: optionalFormText(body, "assignedTo", 160),
+      officialProtocol: optionalFormText(body, "officialProtocol", 100),
+      officialDepartment: optionalFormText(body, "officialDepartment", 180),
+      officialProtocolAt: optionalFormText(body, "officialProtocolAt", 30),
+      note: optionalFormText(body, "note", 1500),
+    },
+  };
+}
 
 export function validatePostInput(value: unknown): { data?: PostInput; error?: string } {
   if (!value || typeof value !== "object") return { error: "Dados inválidos." };

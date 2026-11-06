@@ -169,3 +169,128 @@ export type OfficialNewsQueueCounts = {
   pending: number;
   failed: number;
 };
+
+export type CitizenRequestStatus =
+  | "received"
+  | "triage"
+  | "waiting_information"
+  | "assigned"
+  | "protocolled"
+  | "monitoring"
+  | "fulfilled"
+  | "partially_fulfilled"
+  | "not_fulfilled"
+  | "out_of_scope"
+  | "duplicate"
+  | "closed";
+
+export type CitizenRequestCategory =
+  | "pothole"
+  | "lighting"
+  | "cleaning"
+  | "traffic"
+  | "transport"
+  | "health"
+  | "education"
+  | "security"
+  | "leisure"
+  | "accessibility"
+  | "other";
+
+export type CitizenRequestInput = {
+  fullName: string;
+  phone: string;
+  birthDate: string;
+  postalCode: string;
+  street: string;
+  addressNumber: string;
+  addressComplement: string | null;
+  neighborhood: string;
+  city: string;
+  state: string;
+  category: CitizenRequestCategory;
+  problemPostalCode: string | null;
+  problemStreet: string;
+  problemNumber: string | null;
+  problemNeighborhood: string;
+  problemCity: string;
+  problemReference: string | null;
+  description: string;
+  urgent: boolean;
+  privacyAccepted: true;
+  relationshipConsent: boolean;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  referrer: string | null;
+};
+
+export type CitizenRequest = {
+  id: number;
+  protocol: string;
+  fullName: string;
+  phone: string;
+  birthDate: string;
+  postalCode: string;
+  street: string;
+  addressNumber: string;
+  addressComplement: string | null;
+  neighborhood: string;
+  city: string;
+  state: string;
+  relationshipConsent: boolean;
+  category: CitizenRequestCategory;
+  problemPostalCode: string | null;
+  problemStreet: string;
+  problemNumber: string | null;
+  problemNeighborhood: string;
+  problemCity: string;
+  problemReference: string | null;
+  description: string;
+  urgent: boolean;
+  status: CitizenRequestStatus;
+  assignedTo: string | null;
+  officialProtocol: string | null;
+  officialDepartment: string | null;
+  officialProtocolAt: string | null;
+  followUpDueAt: string;
+  createdAt: string;
+  updatedAt: string;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  attachments: CitizenRequestAttachment[];
+  history: CitizenRequestHistory[];
+};
+
+export type CitizenRequestSummary = Pick<CitizenRequest,
+  "id" | "protocol" | "fullName" | "phone" | "neighborhood" | "category" |
+  "problemNeighborhood" | "description" | "urgent" | "status" | "assignedTo" |
+  "officialProtocol" | "followUpDueAt" | "createdAt" | "updatedAt"
+>;
+
+export type CitizenRequestAttachment = {
+  id: number;
+  requestId: number;
+  filename: string;
+  createdAt: string;
+};
+
+export type CitizenRequestHistory = {
+  id: number;
+  status: CitizenRequestStatus;
+  note: string | null;
+  actor: string;
+  createdAt: string;
+};
+
+export type CitizenRequestUpdateInput = {
+  status: CitizenRequestStatus;
+  assignedTo: string | null;
+  officialProtocol: string | null;
+  officialDepartment: string | null;
+  officialProtocolAt: string | null;
+  note: string | null;
+};

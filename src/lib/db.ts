@@ -290,6 +290,135 @@ if (progressCreated) {
   if (latest) db.prepare("UPDATE camara_news_progress SET watermark = ? WHERE id = 1").run(latest.published_at);
 }
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS citizens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name_enc TEXT NOT NULL,
+    phone_enc TEXT NOT NULL,
+    phone_hash TEXT NOT NULL UNIQUE,
+    birth_date_enc TEXT NOT NULL,
+    postal_code_enc TEXT NOT NULL,
+    street_enc TEXT NOT NULL,
+    address_number_enc TEXT NOT NULL,
+    address_complement_enc TEXT,
+    neighborhood TEXT NOT NULL,
+    city TEXT NOT NULL,
+    state TEXT NOT NULL,
+    relationship_opt_in INTEGER NOT NULL DEFAULT 0,
+    relationship_opt_in_at TEXT,
+    relationship_opt_out_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS citizen_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    protocol TEXT NOT NULL UNIQUE,
+    tracking_token_hash TEXT NOT NULL UNIQUE,
+    citizen_id INTEGER NOT NULL REFERENCES citizens(id) ON DELETE RESTRICT,
+    category TEXT NOT NULL,
+    problem_postal_code TEXT,
+    problem_street TEXT NOT NULL,
+    problem_number TEXT,
+    problem_neighborhood TEXT NOT NULL,
+    problem_city TEXT NOT NULL,
+    problem_reference TEXT,
+    description TEXT NOT NULL,
+    urgent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'received',
+    assigned_to TEXT,
+    official_protocol TEXT,
+    official_department TEXT,
+    official_protocol_at TEXT,
+    follow_up_due_at TEXT NOT NULL,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT,
+    utm_content TEXT,
+    referrer TEXT,
+    ip_hash TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_citizen_requests_queue ON citizen_requests(status, urgent DESC, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_citizen_requests_neighborhood ON citizen_requests(problem_neighborhood, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_citizen_requests_follow_up ON citizen_requests(follow_up_due_at, status);
+
+  CREATE TABLE IF NOT EXISTS citizen_request_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES citizen_requests(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS citizen_request_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES citizen_requests(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    note TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_citizen_request_history ON citizen_request_history(request_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS citizen_consents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    citizen_id INTEGER NOT NULL REFERENCES citizens(id) ON DELETE CASCADE,
+    request_id INTEGER REFERENCES citizen_requests(id) ON DELETE SET NULL,
+    privacy_version TEXT NOT NULL,
+    privacy_accepted_at TEXT NOT NULL,
+    relationship_opt_in INTEGER NOT NULL DEFAULT 0,
+    relationship_text_version TEXT,
+    source_ip_hash TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS citizen_communication_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    citizen_id INTEGER NOT NULL REFERENCES citizens(id) ON DELETE CASCADE,
+    request_id INTEGER REFERENCES citizen_requests(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    idempotency_key TEXT NOT NULL UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    external_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT,
+    sent_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_citizen_communication_outbox_due
+    ON citizen_communication_outbox(status, scheduled_at);
+
+  CREATE TABLE IF NOT EXISTS citizen_communication_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    citizen_id INTEGER REFERENCES citizens(id) ON DELETE SET NULL,
+    request_id INTEGER REFERENCES citizen_requests(id) ON DELETE SET NULL,
+    direction TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    message_enc TEXT,
+    external_message_id TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_citizen_communication_events_recent
+    ON citizen_communication_events(created_at DESC);
+`);
+
+const communicationOutboxColumns = new Set(
+  (db.prepare("PRAGMA table_info(citizen_communication_outbox)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!communicationOutboxColumns.has("external_message_id")) {
+  db.exec("ALTER TABLE citizen_communication_outbox ADD COLUMN external_message_id TEXT");
+}
+if (!communicationOutboxColumns.has("updated_at")) {
+  db.exec("ALTER TABLE citizen_communication_outbox ADD COLUMN updated_at TEXT");
+}
+
 export function getDatabaseStorageStatus() {
   if (process.platform === "win32") return { dataDir, persistentMountDetected: true };
   try {

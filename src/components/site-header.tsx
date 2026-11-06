@@ -58,8 +58,8 @@ export function SiteHeader() {
               </Link>
             );
           })}
-          <Link className="button button--small" href="/#contato" onClick={() => setOpen(false)}>
-            Fale com o mandato
+          <Link className="button button--small" href="/indique-uma-melhoria" onClick={() => setOpen(false)}>
+            Indique uma melhoria
           </Link>
         </nav>
       </div>
