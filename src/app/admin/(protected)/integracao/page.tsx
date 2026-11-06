@@ -63,7 +63,7 @@ export default async function IntegrationPage({ searchParams }: PageProps) {
       </div>
 
       {(qualityCounts.pending > 0 || qualityCounts.failed > 0 || qualityCounts.manualReview > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há indicações aguardando enriquecimento.</strong><span>{qualityCounts.pending} pendentes, {qualityCounts.failed} com falha e {qualityCounts.manualReview} para revisão manual. Os registros incompletos ficam ocultos até a correção.</span></div></div>}
-      {(newsQueue.pending > 0 || newsQueue.failed > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há matérias oficiais aguardando recuperação.</strong><span>{newsQueue.pending} pendentes e {newsQueue.failed} com falha. Use “Atualizar notícias” para retomar a fila; nenhuma matéria encontrada é descartada.</span></div></div>}
+      {(newsQueue.pending > 0 || newsQueue.failed > 0) && <div className="admin-alert legislative-quality-alert" role="status"><AlertTriangle size={18} /><div><strong>Há matérias oficiais aguardando recuperação.</strong><span>{newsQueue.pending} pendentes e {newsQueue.failed} com falha no total. Use “Atualizar notícias (7 dias)” para as recentes ou “Recuperação de notícias antigas” para retomar toda a fila.</span></div></div>}
 
       <section className="admin-list-card camara-status-card">
         <div className="admin-list-card__heading"><h2>Última sincronização</h2><Activity size={20} /></div>

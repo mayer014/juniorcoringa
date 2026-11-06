@@ -3,12 +3,12 @@ import test from "node:test";
 import { mergeOfficialNewsCandidates, newsPageReachedCutoff, newsUpdateCutoff, officialNewsDate, officialNewsImage, parseOfficialMemberNewsArchive, stableOfficialNewsSourceId } from "./official-news";
 
 test("a atualização para na janela recente e não encerra diante de uma página inválida ou desordenada", () => {
-  const cutoff = newsUpdateCutoff("2026-11-05T12:00:00Z");
-  assert.equal(cutoff, "2026-11-03T12:00:00.000Z");
+  const cutoff = newsUpdateCutoff(Date.parse("2026-11-06T12:00:00Z"));
+  assert.equal(cutoff, "2026-10-30T12:00:00.000Z");
   assert.equal(newsPageReachedCutoff(["2026-11-06T12:00:00Z", "2026-11-04T12:00:00Z"], 2, cutoff), false);
-  assert.equal(newsPageReachedCutoff(["2026-11-05T12:00:00Z", "2026-11-02T12:00:00Z"], 2, cutoff), true);
-  assert.equal(newsPageReachedCutoff(["2026-11-02T12:00:00Z", "2026-11-05T12:00:00Z"], 2, cutoff), false);
-  assert.equal(newsPageReachedCutoff(["2026-11-01T12:00:00Z"], 2, cutoff), false);
+  assert.equal(newsPageReachedCutoff(["2026-11-05T12:00:00Z", "2026-10-29T12:00:00Z"], 2, cutoff), true);
+  assert.equal(newsPageReachedCutoff(["2026-10-29T12:00:00Z", "2026-11-05T12:00:00Z"], 2, cutoff), false);
+  assert.equal(newsPageReachedCutoff(["2026-10-29T12:00:00Z"], 2, cutoff), false);
 });
 
 test("usa a foto da matéria mesmo quando og:image anuncia o logotipo genérico", () => {

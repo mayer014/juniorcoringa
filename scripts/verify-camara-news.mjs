@@ -41,8 +41,11 @@ const fixture = createServer((request, response) => {
       data: date, resumo: "", imagem: `http://127.0.0.1:${fixturePort}/news/capa.png`,
       link: `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1/${id}` });
     let entries = pageIds.map((id) => entry(id, page === 1 ? "2026-10-14 13:23:00" : "2026-09-01 13:23:00"));
-    if (latestItemEnabled && page === 1) entries.unshift(entry("50000", "2026-11-05 12:00:00"));
-    if (interruptUpdate && page === 1) entries = [entry("50001", "2026-11-07 12:00:00"), entry("50000", "2026-11-05 12:00:00")];
+    if (latestItemEnabled && page === 1) entries.unshift(
+      entry("40485", "2026-11-05 13:20:47"),
+      entry("40477", "2026-11-05 11:39:34"),
+    );
+    if (interruptUpdate && page === 1) entries = [entry("50001", "2026-11-07 12:00:00"), entry("40485", "2026-11-05 13:20:47")];
     response.end(JSON.stringify(entries));
     return;
   }
@@ -159,7 +162,7 @@ try {
   const selectedIds = exportRecovery || recoveryOnly ? discovered.newsQueueIds.map((id) => id.replace("camara-news:", "")) : ids;
   for (const id of selectedIds) {
     const began = Date.now();
-    const { result } = await synchronize({ phase: "enrich", sourceId: `camara-news:${id}` });
+    const { result } = await synchronize({ phase: "enrich", scope: "history", sourceId: `camara-news:${id}` });
     assert.equal(result.newsInserted, 1, JSON.stringify(result.newsErrors));
     console.log(JSON.stringify({ phase: "article", id, inserted: result.newsInserted, milliseconds: Date.now() - began }));
   }
@@ -187,14 +190,16 @@ try {
 
     apiRequests.length = 0;
     const updates = await discover("updates");
-    assert.deepEqual(apiRequests, [1, 2], "A busca recente para antes da página final do arquivo antigo");
+    assert.deepEqual(apiRequests, [1], "A busca recente para ao cruzar a janela fixa de sete dias");
     assert.equal(updates.newsQueueIds.length, 0);
     latestItemEnabled = true;
     const fresh = await discover("updates");
-    assert.deepEqual(fresh.newsQueueIds, ["camara-news:50000"]);
-    const { result: imported } = await synchronize({ phase: "enrich", sourceId: "camara-news:50000" });
-    assert.equal(imported.newsInserted, 1);
-    expectedPosts += 1;
+    assert.deepEqual(fresh.newsQueueIds, ["camara-news:40485", "camara-news:40477"]);
+    for (const sourceId of fresh.newsQueueIds) {
+      const { result: imported } = await synchronize({ phase: "enrich", scope: "updates", sourceId });
+      assert.equal(imported.newsInserted, 1);
+      expectedPosts += 1;
+    }
     apiRequests.length = 0;
     const upToDate = await discover("updates");
     assert.deepEqual(apiRequests, [1], "Depois de atualizar, uma consulta não volta à página histórica seguinte");

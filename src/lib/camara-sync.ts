@@ -728,7 +728,7 @@ async function discoverOfficialNews(options: CamaraNewsOptions = {}, scanHistory
   const page = options.apiPage ?? (scope === "history" ? progress.nextHistoryPage : 1);
   const initialRequest = options.apiPage === undefined;
   const historyAlreadyComplete = scope === "history" && progress.historyComplete;
-  const cutoff = newsUpdateCutoff(progress.watermark);
+  const cutoff = newsUpdateCutoff();
   const sources: OfficialNewsSource[] = [];
   let publications: OfficialPublication[] | null = null;
   async function attempt(source: OfficialNewsSource["source"], load: () => Promise<OfficialNewsCandidate[]>) {
@@ -782,8 +782,8 @@ async function discoverOfficialNews(options: CamaraNewsOptions = {}, scanHistory
   };
 }
 
-async function enrichQueuedOfficialNews(limit: number, sourceId?: string) {
-  const queued = listOfficialNewsCandidatesForEnrichment(limit, sourceId);
+async function enrichQueuedOfficialNews(limit: number, sourceId?: string, publishedAfter?: string) {
+  const queued = listOfficialNewsCandidatesForEnrichment(limit, sourceId, publishedAfter);
   const errors: string[] = [];
   const results = await mapWithConcurrency(queued, 3, async (item) => {
     try {
@@ -838,6 +838,8 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
   heartbeat.unref();
   try {
     if (mode === "news" && newsOptions.phase !== "enrich" && newsOptions.scope === "history" && newsOptions.resetHistory && !newsOptions.apiPage) resetNewsHistoryProgress();
+    const newsScope = newsOptions.scope || "updates";
+    const newsCutoff = newsScope === "updates" ? newsUpdateCutoff() : undefined;
     const currentYear = new Date().getFullYear();
     const emptyNews: NewsDiscovery = { items: [], sources: [], historyComplete: false };
     const [projectRows, indicationRows, news] = mode === "history"
@@ -887,11 +889,11 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
     for (const candidate of news.items) upsertOfficialNewsCandidate(candidate);
     if (news.checkpoint) recordNewsDiscoveryPage(news.checkpoint);
     const newsCounts = mode === "news" && newsOptions.phase === "enrich"
-      ? await enrichQueuedOfficialNews(1, newsOptions.sourceId)
+      ? await enrichQueuedOfficialNews(1, newsOptions.sourceId, newsCutoff)
       : mode === "daily"
-        ? await enrichQueuedOfficialNews(Number.isFinite(NEWS_DETAILS_PER_RUN) ? Math.max(NEWS_DETAILS_PER_RUN, 0) : 6)
+        ? await enrichQueuedOfficialNews(Number.isFinite(NEWS_DETAILS_PER_RUN) ? Math.max(NEWS_DETAILS_PER_RUN, 0) : 6, undefined, newsCutoff)
         : { inserted: 0, updated: 0, unchanged: 0, failed: 0, errors: [] as string[] };
-    const newsQueue = getOfficialNewsQueueCounts();
+    const newsQueue = getOfficialNewsQueueCounts(mode === "news" || mode === "daily" ? newsCutoff : undefined);
     const retitled = mode === "news" ? 0 : retitleStoredIndications();
     const result: CamaraSyncResult = {
       mode,
@@ -906,7 +908,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       newsFailed: newsQueue.failed,
       newsComplete: newsQueue.complete,
       newsQueueIds: mode === "news" && newsOptions.phase !== "enrich"
-        ? listOfficialNewsCandidatesForEnrichment(10_000).map((item) => item.sourceId)
+        ? listOfficialNewsCandidatesForEnrichment(10_000, undefined, newsCutoff).map((item) => item.sourceId)
         : undefined,
       newsErrors: newsCounts.errors,
       newsSources: news.sources,
@@ -914,7 +916,7 @@ export async function syncCamaraData(mode: CamaraSyncMode = "daily", trigger: Ca
       newsApiPageKey: news.apiPageKey,
       newsHistoryComplete: news.historyComplete,
       newsKnown: newsQueue.total,
-      newsScope: newsOptions.scope || "updates",
+      newsScope,
       newsProgress: getNewsSyncProgress(),
       projects: projects.length,
       indications: indications.length,

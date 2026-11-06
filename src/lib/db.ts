@@ -1190,13 +1190,14 @@ export function upsertOfficialNewsCandidate(input: OfficialNewsCandidate) {
   return existing ? "existing" as const : "inserted" as const;
 }
 
-export function listOfficialNewsCandidatesForEnrichment(limit = 50, sourceId?: string) {
+export function listOfficialNewsCandidatesForEnrichment(limit = 50, sourceId?: string, publishedAfter?: string) {
   const rows = db.prepare(`
     SELECT * FROM official_news_queue
     WHERE status <> 'complete' AND (? IS NULL OR source_id = ?)
+      AND (? IS NULL OR julianday(published_at) >= julianday(?))
     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, attempts ASC, published_at DESC
     LIMIT ?
-  `).all(sourceId ?? null, sourceId ?? null, limit) as OfficialNewsQueueRow[];
+  `).all(sourceId ?? null, sourceId ?? null, publishedAfter ?? null, publishedAfter ?? null, limit) as OfficialNewsQueueRow[];
   return rows.map(mapOfficialNewsQueueItem);
 }
 
@@ -1260,14 +1261,15 @@ export function markOfficialNewsCandidateFailed(sourceId: string, error: string)
   `).run(error.slice(0, 1000), new Date().toISOString(), sourceId);
 }
 
-export function getOfficialNewsQueueCounts(): OfficialNewsQueueCounts {
+export function getOfficialNewsQueueCounts(publishedAfter?: string): OfficialNewsQueueCounts {
   const row = db.prepare(`
     SELECT COUNT(*) AS total,
       SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete,
       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
     FROM official_news_queue
-  `).get() as { total: number; complete: number | null; pending: number | null; failed: number | null };
+    WHERE (? IS NULL OR julianday(published_at) >= julianday(?))
+  `).get(publishedAfter ?? null, publishedAfter ?? null) as { total: number; complete: number | null; pending: number | null; failed: number | null };
   return {
     total: row.total,
     complete: row.complete ?? 0,

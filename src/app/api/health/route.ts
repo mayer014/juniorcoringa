@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-const RELEASE = "2026-11-05-news-images-v16";
+const RELEASE = "2026-11-06-recent-news-window-v17";
 
 export function GET() {
   try {

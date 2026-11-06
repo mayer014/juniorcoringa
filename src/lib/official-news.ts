@@ -15,9 +15,9 @@ export type NewsSyncProgress = {
   historyComplete: boolean;
 };
 
-export function newsUpdateCutoff(watermark: string | null, now = Date.now()) {
-  // A two-day overlap catches delayed publication/indexing without reopening the old archive.
-  return new Date(watermark ? Date.parse(watermark) - 2 * 86400000 : now - 7 * 86400000).toISOString();
+export function newsUpdateCutoff(now = Date.now()) {
+  // The regular update is deliberately bounded. Old gaps belong to the history recovery flow.
+  return new Date(now - 7 * 86400000).toISOString();
 }
 
 export function newsPageReachedCutoff(dates: string[], totalEntries: number, cutoff: string) {

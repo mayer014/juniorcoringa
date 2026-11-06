@@ -68,8 +68,10 @@ export function CamaraSyncButton() {
       router.refresh();
     }
     const waiting = result.newsPending + result.newsFailed;
+    const completeLabel = scope === "updates" ? "completas nos últimos 7 dias" : "completas no total";
+    const waitingLabel = scope === "updates" ? "aguardam recuperação nesta semana" : "aguardam recuperação no histórico";
     setError(errors.length > 0 || (!historyComplete && known === 0));
-    setMessage(`${stopRequested.current ? "Importação pausada." : "Consulta concluída."} ${inserted} matérias novas, ${updated} atualizadas e ${result.newsComplete} completas no total.${!historyComplete ? scope === "history" ? " A próxima recuperação continua da página salva, sem reiniciar o histórico." : " A consulta de novidades não pôde ser concluída; o ponto de atualização anterior foi preservado." : ""}${waiting ? ` ${waiting} aguardam recuperação; o próximo clique retoma a fila.` : ""}${errors.length ? ` Última falha: ${errors.at(-1)}` : ""}`);
+    setMessage(`${stopRequested.current ? "Importação pausada." : "Consulta concluída."} ${inserted} matérias novas, ${updated} atualizadas e ${result.newsComplete} ${completeLabel}.${!historyComplete ? scope === "history" ? " A próxima recuperação continua da página salva, sem reiniciar o histórico." : " A consulta de novidades não pôde ser concluída; o ponto de atualização anterior foi preservado." : ""}${waiting ? ` ${waiting} ${waitingLabel}; o próximo clique retoma a fila correspondente.` : ""}${errors.length ? ` Última falha: ${errors.at(-1)}` : ""}`);
   }
 
   async function synchronize(mode: "daily" | "history" | "indications" | "news", scope: "updates" | "history" = "updates", resetHistory = false) {
@@ -123,7 +125,7 @@ export function CamaraSyncButton() {
         </button>
         <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("news")} disabled={Boolean(loading)}>
           <Newspaper size={18} className={loading === "news" ? "spin" : undefined} />
-          {loading === "news" ? newsScope === "updates" ? "Atualizando notícias..." : "Recuperando histórico..." : "Atualizar notícias"}
+          {loading === "news" ? newsScope === "updates" ? "Atualizando notícias..." : "Recuperando histórico..." : "Atualizar notícias (7 dias)"}
         </button>
         <button className="admin-button admin-button--secondary" type="button" onClick={() => synchronize("indications")} disabled={Boolean(loading)}>
           <ArchiveRestore size={18} className={loading === "indications" ? "spin" : undefined} />

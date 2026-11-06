@@ -107,6 +107,23 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   const failedNews = database.listOfficialNewsCandidatesForEnrichment();
   assert.equal(failedNews[0]?.status, "failed");
   assert.equal(failedNews[0]?.attempts, 1);
+  const recentNews = {
+    ...news,
+    sourceId: "camara-news:40485",
+    sourceUrl: "https://www.camara.ms.gov.br/imprensa/noticias/Noticias/1/2026/40485",
+    title: "Homenagem ao árbitro Ivan Bahia",
+    publishedAt: "2026-11-05T13:20:47-04:00",
+  };
+  database.upsertOfficialNewsCandidate(recentNews);
+  const recentCutoff = "2026-10-30T12:00:00-04:00";
+  assert.deepEqual(
+    database.listOfficialNewsCandidatesForEnrichment(50, undefined, recentCutoff).map((item) => item.sourceId),
+    [recentNews.sourceId],
+    "A fila recente não deve incluir pendências antigas",
+  );
+  assert.equal(database.getOfficialNewsQueueCounts(recentCutoff).pending, 1);
+  assert.equal(database.listOfficialNewsCandidatesForEnrichment().length, 2, "A recuperação histórica mantém toda a fila");
+  database.db.prepare("DELETE FROM official_news_queue WHERE source_id = ?").run(recentNews.sourceId);
   database.markOfficialNewsCandidateComplete(news.sourceId);
   assert.equal(database.getOfficialNewsQueueCounts().complete, 1);
 
