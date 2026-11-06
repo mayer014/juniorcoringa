@@ -62,7 +62,7 @@ Em `/admin/integracao`, use **Atualizar notícias (7 dias)** no dia a dia. A des
 
 Para buscar o acervo antigo e retomar todas as pendências, abra **Recuperação de notícias antigas → Continuar recuperação antiga**. A próxima página é salva depois de cada página importada; um clique posterior retoma desse cursor, em vez de reiniciar. Um lote percorre no máximo 200 páginas antes de processar a fila completa. Um histórico já concluído não é percorrido novamente. **Revisar todo o histórico desde o início** é a opção explícita para reiniciar a varredura, sem excluir publicações, pendências ou o ponto de atualização das novidades. Instalações anteriores a essa versão preservam o acervo já identificado; o cursor histórico passa a ser salvo a partir desta versão.
 
-Cada matéria é recuperada em uma requisição separada, com limite total de 20 segundos e progresso na tela. **Pausar importação** encerra a sequência após a matéria atual.
+Cada matéria é recuperada em uma requisição separada, com limite total de 20 segundos e progresso na tela. O leitor público é consultado antes das rotas da Câmara que costumam bloquear a VPS, evitando que elas consumam todo o prazo antes do fallback. **Pausar importação** encerra a sequência após a matéria atual.
 
 A descoberta consulta de forma independente a página do vereador, o RSS e a API autenticada; a recuperação histórica também usa o acervo local. Se a página receber Bot Verification, a API continua com uma página por requisição. A atualização normal para na janela recente; a recuperação antiga prossegue até uma página vazia ou o limite do lote. Páginas repetidas interrompem a busca sem perder o progresso. O painel identifica as fontes utilizadas e as indisponíveis.
 

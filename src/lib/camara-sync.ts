@@ -572,8 +572,18 @@ async function fetchOfficialNewsDetails(sourceUrl: string, officialImage: string
   let article = "";
   let imageUrl = officialImage || "";
 
+  // The Câmara frequently blocks or stalls the VPS. Use the public reader first so those
+  // attempts cannot consume the whole item budget before the known working fallback runs.
+  try {
+    const reader = await fetchOfficialNewsReader(canonicalUrl, signal);
+    article = reader.article;
+    imageUrl ||= reader.imageUrl;
+  } catch (error) {
+    console.warn(`Não foi possível ler primeiro a matéria pelo leitor alternativo ${canonicalUrl}:`, error);
+  }
+
   // Try the article itself before PDF parsing. Most historical articles need only HTML + image.
-  for (const candidateUrl of [...new Set([sourceUrl, canonicalUrl])]) {
+  for (const candidateUrl of article.length >= 80 && imageUrl ? [] : [...new Set([sourceUrl, canonicalUrl])]) {
     signal.throwIfAborted();
     try {
       const response = await fetchNewsWithRetry(candidateUrl, {

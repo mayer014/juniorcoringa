@@ -22,8 +22,16 @@ let archiveUnavailable = false;
 let latestItemEnabled = false;
 let interruptUpdate = false;
 const apiRequests = [];
+const readerRequests = [];
 const fixture = createServer((request, response) => {
   const url = new URL(request.url, "http://fixture.test");
+  if (url.pathname.startsWith("/reader/")) {
+    const publicationId = url.pathname.match(/(\d+)\/?$/)?.[1] || "unknown";
+    readerRequests.push(publicationId);
+    response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end(`Title: Matéria ${publicationId}\nURL Source: fixture\nMarkdown Content:\n${article}\n\n**Protocolos desta Publicação:**`);
+    return;
+  }
   if (archiveUnavailable || recoveryOnly || (blockedArchive && /^\/(?:camara|imprensa)\//.test(url.pathname))) {
     response.writeHead(200, { "Content-Type": "text/html" });
     response.end("<!DOCTYPE html><title>Bot Verification</title><form class='lsrecaptcha-form'></form>");
@@ -98,6 +106,7 @@ const child = spawn(process.execPath, serverArgs, {
     CAMARA_MEMBER_NEWS_URL: live
       ? "https://www.camara.ms.gov.br/camara/membros/show/14/noticias/1"
       : `http://127.0.0.1:${fixturePort}/camara/membros/show/14/noticias/1`,
+    CAMARA_NEWS_READER_URL: live ? "https://r.jina.ai/" : `http://127.0.0.1:${fixturePort}/reader/`,
     CAMARA_MEMBER_ID: "14",
     // Also tests the formerly broken underscore notation.
     CAMARA_NEWS_REQUEST_TIMEOUT_MS: "8_000",
@@ -200,6 +209,7 @@ try {
       assert.equal(imported.newsInserted, 1);
       expectedPosts += 1;
     }
+    assert.ok(readerRequests.includes("40485") && readerRequests.includes("40477"), "As duas matérias recentes devem usar o leitor antes da fonte bloqueada");
     apiRequests.length = 0;
     const upToDate = await discover("updates");
     assert.deepEqual(apiRequests, [1], "Depois de atualizar, uma consulta não volta à página histórica seguinte");
