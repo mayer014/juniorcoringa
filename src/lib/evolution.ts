@@ -9,6 +9,14 @@ export type EvolutionConfiguration = {
   webhookReady: boolean;
 };
 
+export type EvolutionWebhookState = {
+  active: boolean;
+  enabled: boolean;
+  receivesMessages: boolean;
+  destinationMatches: boolean;
+  error: string | null;
+};
+
 function cleanUrl(value: string | undefined) {
   const url = value?.trim().replace(/\/+$/, "");
   if (!url) return null;
@@ -82,6 +90,44 @@ export async function getEvolutionConnectionState(): Promise<{ state: EvolutionC
     const state = result.instance?.state;
     return { state: state === "open" || state === "close" || state === "connecting" ? state : "unknown", error: null };
   } catch (error) { return { state: "unknown", error: error instanceof Error ? error.message : "Falha ao consultar a Evolution API." }; }
+}
+
+function normalizeWebhookPayload(result: unknown) {
+  if (!result || typeof result !== "object") return null;
+  const root = result as Record<string, unknown>;
+  const first = root.webhook && typeof root.webhook === "object" ? root.webhook as Record<string, unknown> : root;
+  const webhook = first.webhook && typeof first.webhook === "object" ? first.webhook as Record<string, unknown> : first;
+  return webhook;
+}
+
+export async function getEvolutionWebhookState(): Promise<EvolutionWebhookState> {
+  const configuration = getEvolutionConfiguration();
+  const siteUrl = cleanUrl(process.env.NEXT_PUBLIC_SITE_URL);
+  const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim();
+  const empty = { active: false, enabled: false, receivesMessages: false, destinationMatches: false };
+  if (!configuration.ready || !configuration.instance || !siteUrl || !secret) {
+    return { ...empty, error: "Configuração local do webhook incompleta." };
+  }
+  try {
+    let result: unknown;
+    try {
+      result = await evolutionRequest(`/webhook/find/${encodeURIComponent(configuration.instance)}`);
+    } catch (legacyError) {
+      const message = legacyError instanceof Error ? legacyError.message : "Falha desconhecida";
+      if (!/respondeu (404|405)|endpoint/i.test(message)) throw legacyError;
+      result = await evolutionRequest(`/event/webhook/find/${encodeURIComponent(configuration.instance)}`);
+    }
+    const webhook = normalizeWebhookPayload(result);
+    if (!webhook) return { ...empty, error: "A Evolution respondeu sem os dados do webhook." };
+    const enabled = webhook.enabled === true;
+    const events = Array.isArray(webhook.events) ? webhook.events.map(String) : [];
+    const receivesMessages = events.includes("MESSAGES_UPSERT");
+    const expectedUrl = `${siteUrl}/api/webhooks/evolution?secret=${encodeURIComponent(secret)}`;
+    const destinationMatches = String(webhook.url || webhook.webhookUrl || "") === expectedUrl;
+    return { active: enabled && receivesMessages && destinationMatches, enabled, receivesMessages, destinationMatches, error: null };
+  } catch (error) {
+    return { ...empty, error: error instanceof Error ? error.message : "Falha ao consultar o webhook." };
+  }
 }
 
 export async function sendEvolutionText(number: string, text: string) {

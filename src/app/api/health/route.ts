@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-const RELEASE = "2026-11-09-evolution-webhook-diagnostics-v21";
+const RELEASE = "2026-11-09-evolution-webhook-status-v22";
 
 export function GET() {
   try {

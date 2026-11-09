@@ -1,18 +1,18 @@
 import { AlertTriangle, Cake, Check, Clock3, MessageCircleMore, MessagesSquare, Send, ShieldCheck } from "lucide-react";
 import { EvolutionManager } from "@/components/admin/evolution-manager";
 import { getCommunicationCounts, listRecentCommunicationEvents } from "@/lib/communications";
-import { getEvolutionConfiguration, getEvolutionConnectionState } from "@/lib/evolution";
+import { getEvolutionConfiguration, getEvolutionConnectionState, getEvolutionWebhookState } from "@/lib/evolution";
 import { formatDateTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function WhatsAppPage() {
   const configuration = getEvolutionConfiguration();
-  const connection = await getEvolutionConnectionState();
+  const [connection, webhook] = await Promise.all([getEvolutionConnectionState(), getEvolutionWebhookState()]);
   const counts = getCommunicationCounts();
   const events = listRecentCommunicationEvents();
   return <div className="admin-content whatsapp-page">
-    <div className="admin-page-header"><div><span>Relacionamento autorizado</span><h1>WhatsApp e Evolution API</h1><p>Conecte o número do mandato, acompanhe os retornos e controle os envios automáticos.</p></div><EvolutionManager initialState={connection.state} configured={configuration.ready} /></div>
+    <div className="admin-page-header"><div><span>Relacionamento autorizado</span><h1>WhatsApp e Evolution API</h1><p>Conecte o número do mandato, acompanhe os retornos e controle os envios automáticos.</p></div><EvolutionManager initialState={connection.state} configured={configuration.ready} initialWebhookActive={webhook.active} /></div>
 
     {!configuration.ready && <div className="admin-alert evolution-alert"><AlertTriangle size={19} /><div><strong>A conexão ainda não está configurada no site.</strong><span>Adicione no EasyPanel: {configuration.missing.join(", ")}.</span></div></div>}
     {configuration.ready && connection.error && <div className="admin-alert evolution-alert"><AlertTriangle size={19} /><div><strong>A Evolution API não respondeu.</strong><span>{connection.error}</span></div></div>}
@@ -43,7 +43,7 @@ export default async function WhatsAppPage() {
           <div><dt>Endereço da API</dt><dd>{configuration.baseUrl || "Não configurado"}</dd></div>
           <div><dt>Nome da instância</dt><dd>{configuration.instance || "Não configurado"}</dd></div>
           <div><dt>Chave da API</dt><dd>{configuration.missing.includes("EVOLUTION_API_KEY") ? "Não configurada" : "Configurada e protegida"}</dd></div>
-          <div><dt>Webhook</dt><dd>{configuration.webhookReady ? "Pronto para configurar" : "Falta URL pública ou segredo"}</dd></div>
+          <div><dt>Webhook</dt><dd>{webhook.active ? "Ativo e conferido" : webhook.error ? "Não foi possível conferir" : "Configuração divergente"}</dd></div>
           <div><dt>Envios</dt><dd>{configuration.sendingEnabled ? "Ativados" : "Desativados"}</dd></div>
         </dl>
       </section>

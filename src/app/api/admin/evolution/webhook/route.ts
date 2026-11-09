@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { configureEvolutionWebhook } from "@/lib/evolution";
+import { configureEvolutionWebhook, getEvolutionWebhookState } from "@/lib/evolution";
 import { isSameOrigin } from "@/lib/validation";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  if (!(await getSession())) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const result = await getEvolutionWebhookState();
+  return NextResponse.json(result, { status: result.error ? 502 : 200 });
+}
 
 export async function POST(request: Request) {
   try {
