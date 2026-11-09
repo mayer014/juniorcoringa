@@ -8,14 +8,15 @@ type State = "open" | "close" | "connecting" | "unknown";
 export function EvolutionManager({ initialState, configured, initialWebhookActive }: { initialState: State; configured: boolean; initialWebhookActive: boolean }) {
   const [state, setState] = useState(initialState);
   const [webhookActive, setWebhookActive] = useState(initialWebhookActive);
-  const [loading, setLoading] = useState<"status" | "webhook" | null>(null);
+  const [loading, setLoading] = useState<"status" | "webhook" | "receiver" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
 
-  async function request(action: "status" | "webhook") {
+  async function request(action: "status" | "webhook" | "receiver") {
     setLoading(action); setMessage(""); setError(false);
     try {
-      const response = await fetch(action === "status" ? "/api/admin/evolution/status" : "/api/admin/evolution/webhook");
+      const endpoint = action === "status" ? "/api/admin/evolution/status" : action === "webhook" ? "/api/admin/evolution/webhook" : "/api/admin/evolution/webhook-test";
+      const response = await fetch(endpoint, { method: action === "receiver" ? "POST" : "GET" });
       const responseText = await response.text();
       let payload: { state?: State; active?: boolean; error?: string; message?: string } = {};
       try {
@@ -37,6 +38,7 @@ export function EvolutionManager({ initialState, configured, initialWebhookActiv
     <div className="evolution-actions__buttons">
       <button className="admin-button admin-button--secondary" disabled={!configured || Boolean(loading)} onClick={() => request("status")} type="button">{loading === "status" ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />} Testar conexão</button>
       <button className="admin-button admin-button--primary" disabled={!configured || Boolean(loading)} onClick={() => request("webhook")} type="button">{loading === "webhook" ? <Loader2 className="spin" size={17} /> : <Webhook size={17} />} {webhookActive ? "Retornos configurados" : "Verificar retornos"}</button>
+      <button className="admin-button admin-button--secondary" disabled={!configured || Boolean(loading)} onClick={() => request("receiver")} type="button">{loading === "receiver" ? <Loader2 className="spin" size={17} /> : <Cable size={17} />} Testar receptor</button>
     </div>
     {message && <p className={error ? "is-error" : "is-success"}><Cable size={15} /> {message}</p>}
   </div>;
