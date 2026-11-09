@@ -4,10 +4,10 @@ Esta imagem deriva diretamente de `evoapicloud/evolution-api:v2.3.7` e aplica so
 
 O patch evita o estado em que a instância continua `open`, mas deixa de salvar mensagens recebidas e de emitir `MESSAGES_UPSERT`. O build falha deliberadamente se a versão do Baileys ou os pontos de inserção forem diferentes dos esperados.
 
-No EasyPanel, use o repositório do site como fonte, contexto na raiz e o Dockerfile:
+No EasyPanel, use o repositório do site como fonte e configure o caminho de build:
 
 ```text
-infrastructure/evolution/Dockerfile
+/infrastructure/evolution
 ```
 
 Para reverter, restaure a fonte para:
