@@ -1,6 +1,6 @@
 import { AlertTriangle, Cake, Check, Clock3, MessageCircleMore, MessagesSquare, Send, ShieldCheck } from "lucide-react";
 import { EvolutionManager } from "@/components/admin/evolution-manager";
-import { getCommunicationCounts, listRecentCommunicationEvents } from "@/lib/communications";
+import { getCommunicationCounts, getLatestWebhookReceipt, listRecentCommunicationEvents } from "@/lib/communications";
 import { getEvolutionConfiguration, getEvolutionConnectionState, getEvolutionWebhookState } from "@/lib/evolution";
 import { formatDateTime } from "@/lib/format";
 
@@ -11,6 +11,15 @@ export default async function WhatsAppPage() {
   const [connection, webhook] = await Promise.all([getEvolutionConnectionState(), getEvolutionWebhookState()]);
   const counts = getCommunicationCounts();
   const events = listRecentCommunicationEvents();
+  const latestWebhook = getLatestWebhookReceipt();
+  const webhookOutcomes: Record<string, string> = {
+    recorded: "Mensagem recebida e vinculada",
+    citizen_not_found: "Mensagem recebida, telefone não cadastrado",
+    outgoing_ignored: "Mensagem enviada pelo próprio número",
+    message_invalid: "Mensagem recebida em formato inválido",
+    event_ignored: "Evento recebido e ignorado",
+    payload_invalid: "Conteúdo de webhook inválido",
+  };
   return <div className="admin-content whatsapp-page">
     <div className="admin-page-header"><div><span>Relacionamento autorizado</span><h1>WhatsApp e Evolution API</h1><p>Conecte o número do mandato, acompanhe os retornos e controle os envios automáticos.</p></div><EvolutionManager initialState={connection.state} configured={configuration.ready} initialWebhookActive={webhook.active} /></div>
 
@@ -44,6 +53,7 @@ export default async function WhatsAppPage() {
           <div><dt>Nome da instância</dt><dd>{configuration.instance || "Não configurado"}</dd></div>
           <div><dt>Chave da API</dt><dd>{configuration.missing.includes("EVOLUTION_API_KEY") ? "Não configurada" : "Configurada e protegida"}</dd></div>
           <div><dt>Webhook</dt><dd>{webhook.active ? "Ativo e conferido" : webhook.error ? "Não foi possível conferir" : "Configuração divergente"}</dd></div>
+          <div><dt>Último retorno</dt><dd>{latestWebhook ? `${webhookOutcomes[latestWebhook.outcome] || latestWebhook.outcome} · ${formatDateTime(latestWebhook.createdAt)}` : "Nenhum webhook recebido"}</dd></div>
           <div><dt>Envios</dt><dd>{configuration.sendingEnabled ? "Ativados" : "Desativados"}</dd></div>
         </dl>
       </section>

@@ -186,12 +186,13 @@ test("mantém overrides manuais e controla publicação pelo enriquecimento", as
   assert.equal(communications.getCommunicationCounts().pending, 1);
   const webhookResult = communications.handleEvolutionWebhook({
     event: "messages.upsert",
-    data: { key: { remoteJid: "5567999990000@s.whatsapp.net", fromMe: false, id: "reply-test-1" }, message: { conversation: "SAIR" } },
+    data: { key: { remoteJid: "120000000000000@lid", remoteJidAlt: "5567999990000@s.whatsapp.net", fromMe: false, id: "reply-test-1" }, message: { conversation: "SAIR" } },
   });
   assert.equal(webhookResult.optedOut, true);
   assert.equal((database.db.prepare("SELECT relationship_opt_in FROM citizens WHERE id = 1").get() as { relationship_opt_in: number }).relationship_opt_in, 0);
   assert.equal(communications.getCommunicationCounts().pending, 0);
   assert.equal(communications.listRecentCommunicationEvents(1)[0]?.message, "SAIR");
+  assert.equal(communications.getLatestWebhookReceipt()?.outcome, "recorded");
   const updatedRequest = requests.updateCitizenRequest(createdRequest.id, {
     status: "protocolled", assignedTo: "Assessor Teste", officialProtocol: "PMCG-123",
     officialDepartment: "SISEP", officialProtocolAt: "2026-11-06T10:30", note: "Protocolado no setor competente.",

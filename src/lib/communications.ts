@@ -37,6 +37,19 @@ export function listRecentCommunicationEvents(limit = 20) {
   }));
 }
 
+export function getLatestWebhookReceipt() {
+  return db.prepare(`SELECT event, outcome, sender_hint AS senderHint, created_at AS createdAt
+    FROM citizen_webhook_receipts ORDER BY id DESC LIMIT 1`).get() as
+    { event: string; outcome: string; senderHint: string | null; createdAt: string } | undefined;
+}
+
+function recordWebhookReceipt(event: string, outcome: string, jid = "") {
+  const digits = jid.replace(/\D/g, "");
+  const senderHint = digits ? `final ${digits.slice(-4)}` : null;
+  db.prepare("INSERT INTO citizen_webhook_receipts (event, outcome, sender_hint, created_at) VALUES (?, ?, ?, ?)")
+    .run(event || "desconhecido", outcome, senderHint, new Date().toISOString());
+}
+
 export function scheduleBirthdayMessages(now = new Date()) {
   const today = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "America/Campo_Grande" })
     .formatToParts(now).reduce<Record<string, string>>((parts, part) => ({ ...parts, [part.type]: part.value }), {});
@@ -102,19 +115,41 @@ function extractIncomingText(data: Record<string, unknown>) {
 }
 
 export function handleEvolutionWebhook(body: unknown) {
-  if (!body || typeof body !== "object") return { ignored: true };
+  if (!body || typeof body !== "object") {
+    recordWebhookReceipt("desconhecido", "payload_invalid");
+    return { ignored: true };
+  }
   const payload = body as Record<string, unknown>;
   const event = String(payload.event || "").toLowerCase().replace(/_/g, ".");
-  if (event !== "messages.upsert") return { ignored: true };
+  if (event !== "messages.upsert") {
+    recordWebhookReceipt(event, "event_ignored");
+    return { ignored: true };
+  }
   const data = payload.data as Record<string, unknown> | undefined;
   const key = data?.key as Record<string, unknown> | undefined;
-  if (!data || !key || key.fromMe === true) return { ignored: true };
-  const remoteJid = String(key.remoteJid || "");
-  const rawPhone = remoteJid.split("@")[0].split(":")[0];
-  const phone = normalizePhone(rawPhone);
-  if (!phone) return { ignored: true };
-  const citizen = db.prepare("SELECT id FROM citizens WHERE phone_hash = ?").get(hashCitizenValue(phone)) as { id: number } | undefined;
-  if (!citizen) return { ignored: true };
+  const primaryJid = String(key?.remoteJid || "");
+  if (!data || !key) {
+    recordWebhookReceipt(event, "message_invalid", primaryJid);
+    return { ignored: true };
+  }
+  if (key.fromMe === true) {
+    recordWebhookReceipt(event, "outgoing_ignored", primaryJid);
+    return { ignored: true };
+  }
+  const jidCandidates = [key.remoteJidAlt, data.remoteJidAlt, key.participantAlt, data.participantAlt, key.remoteJid, data.remoteJid]
+    .map((value) => String(value || "")).filter(Boolean);
+  let citizen: { id: number } | undefined;
+  let matchedJid = primaryJid;
+  for (const jid of jidCandidates) {
+    const phone = normalizePhone(jid.split("@")[0].split(":")[0]);
+    if (!phone) continue;
+    const match = db.prepare("SELECT id FROM citizens WHERE phone_hash = ?").get(hashCitizenValue(phone)) as { id: number } | undefined;
+    if (match) { citizen = match; matchedJid = jid; break; }
+  }
+  if (!citizen) {
+    recordWebhookReceipt(event, "citizen_not_found", jidCandidates.find((jid) => jid.includes("@s.whatsapp.net")) || primaryJid);
+    return { ignored: true };
+  }
   const text = extractIncomingText(data).trim().slice(0, 3000);
   const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
   const request = db.prepare("SELECT id FROM citizen_requests WHERE citizen_id = ? ORDER BY id DESC LIMIT 1").get(citizen.id) as { id: number } | undefined;
@@ -127,5 +162,6 @@ export function handleEvolutionWebhook(body: unknown) {
       db.prepare("UPDATE citizen_communication_outbox SET status = 'cancelled', updated_at = ? WHERE citizen_id = ? AND status = 'pending'").run(now, citizen.id);
     }
   })();
+  recordWebhookReceipt(event, "recorded", matchedJid);
   return { ignored: false, optedOut: ["SAIR", "CANCELAR", "PARAR"].includes(normalized) };
 }

@@ -407,6 +407,17 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_citizen_communication_events_recent
     ON citizen_communication_events(created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS citizen_webhook_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    sender_hint TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_citizen_webhook_receipts_recent
+    ON citizen_webhook_receipts(created_at DESC);
 `);
 
 const communicationOutboxColumns = new Set(
