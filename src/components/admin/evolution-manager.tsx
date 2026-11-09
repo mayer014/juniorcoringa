@@ -15,7 +15,13 @@ export function EvolutionManager({ initialState, configured }: { initialState: S
     setLoading(action); setMessage(""); setError(false);
     try {
       const response = await fetch(action === "status" ? "/api/admin/evolution/status" : "/api/admin/evolution/webhook", { method: action === "status" ? "GET" : "POST" });
-      const payload = await response.json() as { state?: State; error?: string; message?: string };
+      const responseText = await response.text();
+      let payload: { state?: State; error?: string; message?: string } = {};
+      try {
+        payload = responseText ? JSON.parse(responseText) as typeof payload : {};
+      } catch {
+        throw new Error(`O servidor devolveu uma resposta inválida (HTTP ${response.status}). Consulte os logs da implantação.`);
+      }
       if (!response.ok) throw new Error(payload.error || "Não foi possível concluir.");
       if (payload.state) setState(payload.state);
       setMessage(payload.message || (action === "webhook" ? "Webhook configurado na Evolution API." : "Situação atualizada."));

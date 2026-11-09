@@ -64,6 +64,9 @@ async function evolutionRequest(pathname: string, init?: RequestInit) {
         : String(text || `HTTP ${response.status}`).slice(0, 400);
       throw new Error(`Evolution API respondeu ${response.status}: ${message}`);
     }
+    if (typeof payload === "string" && payload.trim().startsWith("<")) {
+      throw new Error(`Evolution API respondeu HTML em vez de JSON no endpoint ${pathname}.`);
+    }
     return payload;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw new Error("A Evolution API demorou mais de 6 segundos para responder.");
@@ -96,14 +99,19 @@ export async function configureEvolutionWebhook() {
   const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim();
   if (!siteUrl || !secret) throw new Error("Configure NEXT_PUBLIC_SITE_URL e EVOLUTION_WEBHOOK_SECRET.");
   if (process.env.NODE_ENV === "production" && !siteUrl.startsWith("https://")) throw new Error("O webhook exige NEXT_PUBLIC_SITE_URL com HTTPS em produção.");
-  return evolutionRequest(`/webhook/set/${encodeURIComponent(configuration.instance!)}`, {
-    method: "POST",
-    body: JSON.stringify({
-      enabled: true,
-      url: `${siteUrl}/api/webhooks/evolution?secret=${encodeURIComponent(secret)}`,
-      webhookByEvents: false,
-      webhookBase64: false,
-      events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "SEND_MESSAGE"],
-    }),
-  });
+  const url = `${siteUrl}/api/webhooks/evolution?secret=${encodeURIComponent(secret)}`;
+  const events = ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "SEND_MESSAGE"];
+  try {
+    return await evolutionRequest(`/webhook/set/${encodeURIComponent(configuration.instance!)}`, {
+      method: "POST",
+      body: JSON.stringify({ enabled: true, url, webhookByEvents: false, webhookBase64: false, events }),
+    });
+  } catch (legacyError) {
+    const message = legacyError instanceof Error ? legacyError.message : "Falha desconhecida";
+    if (!/respondeu (404|405)|endpoint/i.test(message)) throw legacyError;
+    return evolutionRequest(`/event/webhook/set/${encodeURIComponent(configuration.instance!)}`, {
+      method: "POST",
+      body: JSON.stringify({ webhook: { enabled: true, url, events, byEvents: false, base64: false } }),
+    });
+  }
 }
